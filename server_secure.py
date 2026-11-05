@@ -290,7 +290,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         if 'multipart/form-data' not in content_type:
             self.send_response(400)
             self.end_headers()
-            self.wfile.write(b"Requête invalide.")
+            self.wfile.write("Requête invalide.".encode('utf-8'))
             return
 
         content_length = int(self.headers.get('Content-Length', 0))
