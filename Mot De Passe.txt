@@ -1,0 +1,15 @@
+user : Viktor
+password : 1234
+role : user
+
+user : Admin
+password : 2
+role : admin
+
+user : Hugo
+password : 1
+role : user
+
+user : Nathan
+password : 6
+role : user
