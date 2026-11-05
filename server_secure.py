@@ -374,7 +374,9 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         return f
 
-server_address = ('100.108.128.118', 80)
-httpd = http.server.ThreadingHTTPServer(server_address, SecureHandler)
-print("[*] Serveur lancé avec page de login personnalisée sur http://aresos.com")
-httpd.serve_forever()
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    server_address = ("0.0.0.0", port)
+    httpd = http.server.ThreadingHTTPServer(server_address, SecureHandler)
+    print(f"[*] Serveur lancé et à l'écoute sur le port {port}")
+    httpd.serve_forever()
