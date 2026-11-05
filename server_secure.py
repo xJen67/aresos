@@ -1,384 +1,388 @@
 import http.server
+import socketserver
 import os
-import io
 import urllib.parse
-import html
-import shutil
-import uuid
-from http import cookies
+import cgi
+import http.cookies
+import hashlib
+import time
+import secrets
+from datetime import datetime
+
+PORT = 8080
+UPLOAD_DIR = "uploads"
+PASSWORD_FILE = "Mot De Passe.txt"
+LOG_FILE = "server.log"
+
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs("temp_shares", exist_ok=True)
+
+sessions = {}
+temp_links = {}
+
+def log_activity(message):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f"[{timestamp}] {message}\n"
+    print(log_entry.strip())
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(log_entry)
+    except Exception as e:
+        print(f"Error writing to log: {e}")
 
 def load_users():
-    filename = "Mot De Passe.txt"
-    users_db = {}
-    current_user = None
-    current_pass = None
-    current_role = "user"
-    
-    if os.path.exists(filename):
-        try:
-            with open(filename, "r", encoding="utf-8-sig") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or ":" not in line:
-                        continue
-                    parts = line.split(":", 1)
-                    key = parts[0].strip().lower()
-                    val = parts[1].strip()
-                    
-                    if key == "user":
-                        if current_user:
-                            users_db[current_user] = {"password": current_pass, "role": current_role}
-                        current_user = val
-                        current_pass = None
-                        current_role = "user"
-                    elif key == "password":
-                        current_pass = val
-                    elif key == "role":
-                        current_role = val.lower()
-                
-                if current_user and current_pass:
-                    users_db[current_user] = {"password": current_pass, "role": current_role}
-                        
-            print(f"[*] Fichier '{filename}' lu avec succès ! Comptes chargés : {list(users_db.keys())}")
-        except Exception as e:
-            print(f"[!] Erreur lors de la lecture du fichier : {e}")
-    else:
-        print(f"[!] Fichier '{filename}' introuvable. Compte de secours 'admin':'admin'")
-        users_db["admin"] = {"password": "admin", "role": "admin"}
-        
-    return users_db
+    users = {}
+    if os.path.exists(PASSWORD_FILE):
+        with open(PASSWORD_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split(":")
+                if len(parts) >= 2:
+                    users[parts[0]] = parts[1]
+    return users
 
-USERS_DB = load_users()
-SESSIONS = {}  # Stockage temporaire des sessions connectées
-
-UPLOAD_DIR = os.path.join(os.getcwd(), "Echange de fichiers")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-class SecureHandler(http.server.SimpleHTTPRequestHandler):
-    def check_auth(self):
-        # Vérifie si l'utilisateur possède un cookie de session valide
+class SecureHandler(http.server.BaseHTTPRequestHandler):
+    def get_current_user(self):
         cookie_header = self.headers.get('Cookie')
         if cookie_header:
-            try:
-                c = cookies.SimpleCookie(cookie_header)
-                if 'session_id' in c:
-                    session_id = c['session_id'].value
-                    if session_id in SESSIONS:
-                        return SESSIONS[session_id]
-            except Exception:
-                pass
+            cookie = http.cookies.SimpleCookie(cookie_header)
+            if 'session_id' in cookie:
+                session_id = cookie['session_id'].value
+                return sessions.get(session_id)
         return None
 
-    def get_file_icon(self, filename, is_dir):
-        if is_dir:
-            return "bi-folder-fill text-warning"
-        
-        ext = os.path.splitext(filename)[1].lower()
-        if ext in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp']:
-            return "bi-file-earmark-image-fill text-primary"
-        elif ext in ['.pdf']:
-            return "bi-file-earmark-pdf-fill text-danger"
-        elif ext in ['.zip', '.rar', '.7z', '.tar', '.gz']:
-            return "bi-file-earmark-zip-fill text-secondary"
-        elif ext in ['.mp4', '.avi', '.mkv', '.mov']:
-            return "bi-file-earmark-play-fill text-info"
-        elif ext in ['.mp3', '.wav', '.ogg']:
-            return "bi-file-earmark-music-fill text-info"
-        elif ext in ['.py', '.bat', '.sh', '.js', '.html', '.css', '.json']:
-            return "bi-file-earmark-code-fill text-dark"
-        elif ext in ['.txt', '.md', '.doc', '.docx']:
-            return "bi-file-earmark-text-fill text-secondary"
-        return "bi-file-earmark-fill text-muted"
-
     def do_GET(self):
-        parsed_url = urllib.parse.urlparse(self.path)
-        
-        # Route de la page de connexion
-        if parsed_url.path == "/login":
+        parsed_path = urllib.parse.urlparse(self.path)
+        path = parsed_path.path
+        query = urllib.parse.parse_qs(parsed_path.query)
+
+        user = self.get_current_user()
+
+        if path.startswith("/download_temp/"):
+            token = path.split("/")[-1]
+            if token in temp_links:
+                file_info = temp_links[token]
+                if time.time() > file_info["expires"]:
+                    del temp_links[token]
+                    self.send_error(410, "Link expired")
+                    log_activity(f"ALERTE 410 : Expired temp link accessed")
+                    return
+                filepath = file_info["path"]
+                if os.path.exists(filepath):
+                    self.send_response(200)
+                    self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(filepath)}"')
+                    self.end_headers()
+                    with open(filepath, "rb") as f:
+                        self.wfile.write(f.read())
+                    log_activity(f"Téléchargement par lien temporaire : {os.path.basename(filepath)}")
+                    return
+            self.send_error(404, "Invalid or expired link")
+            return
+
+        if not user:
             self.send_login_page()
             return
 
-        # Route de déconnexion
-        if parsed_url.path == "/logout":
-            cookie_header = self.headers.get('Cookie')
-            if cookie_header:
-                try:
-                    c = cookies.SimpleCookie(cookie_header)
-                    if 'session_id' in c:
-                        SESSIONS.pop(c['session_id'].value, None)
-                except Exception:
-                    pass
-            
-            self.send_response(303)
-            self.send_header('Set-Cookie', 'session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT')
-            self.send_header('Location', '/login')
-            self.end_headers()
-            return
+        if path == "/":
+            self.send_dashboard(user)
+        elif path.startswith("/uploads/"):
+            rel_path = path[len("/uploads/"):]
+            parts = rel_path.split("/", 1)
+            target_user = parts[0]
 
-        # Vérification de la session active
-        logged_in_user = self.check_auth()
-        if not logged_in_user:
-            self.send_response(303)
-            self.send_header('Location', '/login')
-            self.end_headers()
-            return
-
-        # Gestion de la suppression par l'Admin
-        if parsed_url.path == "/delete":
-            user_role = USERS_DB.get(logged_in_user, {}).get("role", "user")
-            if user_role != "admin":
-                self.send_response(403)
-                self.send_header("Content-type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(b"<html><head><link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css' rel='stylesheet'></head><body class='bg-light text-center py-5'>")
-                self.wfile.write(b"<h2 class='text-danger'>Acces Interdit (403)</h2>")
-                self.wfile.write(b"<p>Action reservee exclusivement aux administrateurs.</p>")
-                self.wfile.write(b"<a href='/' class='btn btn-secondary'>Retour a l'accueil</a></body></html>")
+            if user != "Admin" and user != target_user:
+                log_activity(f"ALERTE 403 : {user} a tenté d'accéder au dossier de {target_user}")
+                self.send_error(403, "Accès refusé à ce dossier.")
                 return
 
-            query_params = urllib.parse.parse_qs(parsed_url.query)
-            if "file" in query_params:
-                filename_to_delete = query_params["file"][0]
-                filename_to_delete = os.path.basename(filename_to_delete)
-                
-                target_path = os.path.join(os.getcwd(), filename_to_delete)
-                if not os.path.exists(target_path):
-                    target_path = os.path.join(UPLOAD_DIR, filename_to_delete)
+            filepath = os.path.join(UPLOAD_DIR, rel_path)
+            if os.path.exists(filepath) and os.path.isfile(filepath):
+                self.send_response(200)
+                self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(filepath)}"')
+                self.end_headers()
+                with open(filepath, "rb") as f:
+                    self.wfile.write(f.read())
+                log_activity(f"Téléchargement : {user} a téléchargé {os.path.basename(filepath)}")
+            else:
+                self.send_error(404, "Fichier introuvable.")
+        elif path == "/logout":
+            log_activity(f"Déconnexion : {user}")
+            self.send_response(303)
+            self.send_header('Location', '/')
+            self.send_header('Set-Cookie', 'session_id=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/')
+            self.end_headers()
+        else:
+            log_activity(f"ALERTE 404 : {user} a tenté d'accéder à {path}")
+            self.send_error(404, "Page non trouvée")
 
-                protected_files = ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "lancement.bat"]
-                if os.path.exists(target_path) and filename_to_delete.lower() not in protected_files:
-                    try:
-                        if os.path.isdir(target_path):
-                            shutil.rmtree(target_path)
-                        else:
-                            os.remove(target_path)
-                        print(f"[-] Fichier supprime par l'admin '{logged_in_user}' : {filename_to_delete}")
-                    except Exception as e:
-                        print(f"[!] Erreur lors de la suppression : {e}")
+    def do_POST(self):
+        parsed_path = urllib.parse.urlparse(self.path)
+        path = parsed_path.path
+
+        if path == "/login":
+            form = cgi.FieldStorage(
+                fp=self.rfile,
+                headers=self.headers,
+                environ={
+                    'REQUEST_METHOD': 'POST',
+                    'CONTENT_TYPE': self.headers.get('Content-Type', ''),
+                }
+            )
+            username = form.getvalue("username")
+            password = form.getvalue("password")
+            users = load_users()
+
+            if username in users and users[username] == password:
+                session_id = secrets.token_hex(16)
+                sessions[session_id] = username
+                log_activity(f"Succès de connexion : {username}")
+                self.send_response(303)
+                self.send_header('Location', '/')
+                self.send_header('Set-Cookie', f'session_id={session_id}; Path=/; HttpOnly')
+                self.end_headers()
+            else:
+                log_activity(f"Échec de connexion : tentative pour l'utilisateur '{username}'")
+                self.send_login_page("Identifiant ou mot de passe incorrect.")
+        
+        elif path == "/upload":
+            user = self.get_current_user()
+            if not user:
+                self.send_error(401, "Non autorisé")
+                return
+
+            form = cgi.FieldStorage(
+                fp=self.rfile,
+                headers=self.headers,
+                environ={
+                    'REQUEST_METHOD': 'POST',
+                    'CONTENT_TYPE': self.headers.get('Content-Type', ''),
+                }
+            )
+            
+            user_folder = os.path.join(UPLOAD_DIR, user)
+            os.makedirs(user_folder, exist_ok=True)
+
+            if "file" in form:
+                fileitem = form["file"]
+                if fileitem.filename:
+                    filename = os.path.basename(fileitem.filename)
+                    filepath = os.path.join(user_folder, filename)
+                    with open(filepath, "wb") as f:
+                        f.write(fileitem.file.read())
+                    log_activity(f"Upload : {user} a mis en ligne {filename}")
 
             self.send_response(303)
             self.send_header('Location', '/')
             self.end_headers()
-            return
 
-        # Contrôle d'accès RBAC
-        path_decoded = urllib.parse.unquote(self.path).lstrip('/')
-        fichiers_sensibles = ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "lancement.bat"]
-        est_sensible = path_decoded.lower() in fichiers_sensibles
-        est_dossier_admin = path_decoded.lower().startswith("admin")
-        
-        if est_sensible or est_dossier_admin:
-            user_role = USERS_DB.get(logged_in_user, {}).get("role", "user")
-            if user_role != "admin":
-                self.send_response(403)
-                self.send_header("Content-type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(b"<html><head><link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css' rel='stylesheet'></head><body class='bg-light text-center py-5'>")
-                self.wfile.write(b"<div class='card shadow-sm d-inline-block p-4' style='max-width: 450px;'>")
-                self.wfile.write(b"<h2 class='text-danger mb-3'>Acces Interdit (403)</h2>")
-                self.wfile.write(b"<p class='text-muted'>Cette zone est reservee exclusivement aux comptes avec le role <b>admin</b>.</p>")
-                self.wfile.write(b"<a href='/' class='btn btn-outline-primary'>Retour a l'accueil</a></div></body></html>")
+        elif path == "/delete":
+            user = self.get_current_user()
+            if not user:
+                self.send_error(401, "Non autorisé")
                 return
 
-        super().do_GET()
+            form = cgi.FieldStorage(
+                fp=self.rfile,
+                headers=self.headers,
+                environ={
+                    'REQUEST_METHOD': 'POST',
+                    'CONTENT_TYPE': self.headers.get('Content-Type', ''),
+                }
+            )
+            file_to_delete = form.getvalue("file_path")
+            if file_to_delete:
+                rel_path = file_to_delete.replace("/uploads/", "")
+                parts = rel_path.split("/", 1)
+                file_owner = parts[0]
 
-    def do_POST(self):
-        parsed_url = urllib.parse.urlparse(self.path)
-        
-        # Traitement du formulaire de connexion
-        if parsed_url.path == "/login":
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
-            params = urllib.parse.parse_qs(body)
-            
-            username = params.get("username", [""])[0].strip()
-            password = params.get("password", [""])[0].strip()
+                if user == "Admin" or user == file_owner:
+                    full_path = os.path.join(UPLOAD_DIR, rel_path)
+                    if os.path.exists(full_path):
+                        os.remove(full_path)
+                        log_activity(f"Suppression : {user} a supprimé {rel_path}")
 
-            if username in USERS_DB and USERS_DB[username]["password"] == password:
-                session_id = str(uuid.uuid4())
-                SESSIONS[session_id] = username
-
-                self.send_response(303)
-                self.send_header('Set-Cookie', f'session_id={session_id}; Path=/')
-                self.send_header('Location', '/')
-                self.end_headers()
-            else:
-                self.send_login_page(error="Identifiant ou mot de passe incorrect.")
-            return
-
-        # Traitement des uploads de fichiers
-        logged_in_user = self.check_auth()
-        if not logged_in_user:
             self.send_response(303)
-            self.send_header('Location', '/login')
+            self.send_header('Location', '/')
             self.end_headers()
-            return
 
-        content_type = self.headers.get('Content-Type', '')
-        if 'multipart/form-data' not in content_type:
-            self.send_response(400)
+        elif path == "/share":
+            user = self.get_current_user()
+            if not user:
+                self.send_error(401, "Non autorisé")
+                return
+
+            form = cgi.FieldStorage(
+                fp=self.rfile,
+                headers=self.headers,
+                environ={
+                    'REQUEST_METHOD': 'POST',
+                    'CONTENT_TYPE': self.headers.get('Content-Type', ''),
+                }
+            )
+            file_to_share = form.getvalue("file_path")
+            if file_to_share:
+                rel_path = file_to_share.replace("/uploads/", "")
+                parts = rel_path.split("/", 1)
+                file_owner = parts[0]
+
+                if user == "Admin" or user == file_owner:
+                    full_path = os.path.join(UPLOAD_DIR, rel_path)
+                    if os.path.exists(full_path):
+                        token = secrets.token_urlsafe(16)
+                        temp_links[token] = {
+                            "path": full_path,
+                            "expires": time.time() + 3600 
+                        }
+                        log_activity(f"Partage temp : {user} a généré un lien pour {rel_path}")
+                        self.send_dashboard(user, share_link=f"/download_temp/{token}")
+                        return
+
+            self.send_response(303)
+            self.send_header('Location', '/')
             self.end_headers()
-            self.wfile.write(b"Requete invalide.")
-            return
-
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length)
-
-        try:
-            boundary = content_type.split("boundary=")[1].encode('utf-8')
-            parts = body.split(boundary)
-            for part in parts:
-                if b'filename="' in part:
-                    header_part, file_data = part.split(b'\r\n\r\n', 1)
-                    file_data = file_data.rstrip(b'\r\n--')
-                    
-                    filename_start = header_part.find(b'filename="') + 10
-                    filename_end = header_part.find(b'"', filename_start)
-                    filename = header_part[filename_start:filename_end].decode('utf-8')
-                    
-                    if filename:
-                        filename = os.path.basename(filename)
-                        filepath = os.path.join(UPLOAD_DIR, filename)
-                        
-                        with open(filepath, "wb") as f:
-                            f.write(file_data)
-                        print(f"[+] Fichier uploade avec succes dans 'Echange de fichiers' : {filename} par {logged_in_user}")
-        except Exception as e:
-            print(f"[!] Erreur lors de l'upload : {e}")
-
-        self.send_response(303)
-        self.send_header('Location', '/')
-        self.end_headers()
 
     def send_login_page(self, error=""):
-        html_content = f"""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        html = f"""
         <!DOCTYPE html>
         <html lang="fr">
         <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <title>Connexion - Aresos Cloud</title>
-            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-            <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
+            <meta charset="UTF-8">
+            <title>Connexion</title>
+            <style>
+                body {{ font-family: sans-serif; background: #f4f4f9; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }}
+                .login-box {{ background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); width: 300px; }}
+                h2 {{ margin-top: 0; color: #333; text-align: center; }}
+                input {{ width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }}
+                .password-container {{ position: relative; }}
+                .eye-icon {{ position: absolute; right: 10px; top: 18px; cursor: pointer; user-select: none; }}
+                button {{ width: 100%; padding: 10px; background: #007BFF; border: none; color: white; border-radius: 4px; cursor: pointer; font-weight: bold; }}
+                button:hover {{ background: #0056b3; }}
+                .error {{ color: red; font-size: 0.9em; text-align: center; margin-bottom: 10px; }}
+            </style>
         </head>
-        <body class="bg-dark d-flex align-items-center justify-content-center vh-100">
-            <div class="card shadow-lg p-4 bg-secondary text-light" style="width: 100%; max-width: 400px; border-radius: 12px;">
-                <div class="text-center mb-4">
-                    <i class="bi bi-shield-lock-fill text-warning display-4"></i>
-                    <h3 class="fw-bold mt-2">Connexion Aresos</h3>
-                    <p class="text-light small">Veuillez vous identifier pour acceder au cloud</p>
-                </div>
-                {f'<div class="alert alert-danger py-2 small text-center"><i class="bi bi-exclamation-triangle-fill me-1"></i>{error}</div>' if error else ''}
+        <body>
+            <div class="login-box">
+                <h2>Connexion Sécurisée</h2>
+                {'<div class="error">' + error + '</div>' if error else ''}
                 <form action="/login" method="POST">
-                    <div class="mb-3">
-                        <label class="form-label fw-semibold"><i class="bi bi-person-fill me-1"></i> Nom d'utilisateur</label>
-                        <input type="text" name="username" class="form-control" required autofocus autocomplete="username">
+                    <input type="text" name="username" placeholder="Nom d'utilisateur" required>
+                    <div class="password-container">
+                        <input type="password" id="password" name="password" placeholder="Mot de passe" required>
+                        <span class="eye-icon" onclick="togglePassword()">👁️</span>
                     </div>
-                    <div class="mb-3">
-                        <label class="form-label fw-semibold"><i class="bi bi-key-fill me-1"></i> Mot de passe</label>
-                        <input type="password" name="password" class="form-control" required autocomplete="current-password">
-                    </div>
-                    <button type="submit" class="btn btn-warning w-100 fw-bold py-2 shadow-sm mt-2">
-                        <i class="bi bi-box-arrow-in-right me-1"></i> Se connecter
-                    </button>
+                    <button type="submit">Se connecter</button>
                 </form>
+            </div>
+            <script>
+                function togglePassword() {{
+                    const pwdInput = document.getElementById('password');
+                    if (pwdInput.type === 'password') {{
+                        pwdInput.type = 'text';
+                    }} else {{
+                        pwdInput.type = 'password';
+                    }}
+                }}
+            </script>
+        </body>
+        </html>
+        """
+        self.wfile.write(html.encode("utf-8"))
+
+    def send_dashboard(self, user, share_link=None):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+
+        folders_to_show = []
+        if user == "Admin":
+            if os.path.exists(UPLOAD_DIR):
+                folders_to_show = os.listdir(UPLOAD_DIR)
+        else:
+            folders_to_show = [user]
+            user_path = os.path.join(UPLOAD_DIR, user)
+            os.makedirs(user_path, exist_ok=True)
+
+        files_html = ""
+        for folder in folders_to_show:
+            folder_path = os.path.join(UPLOAD_DIR, folder)
+            if os.path.isdir(folder_path):
+                files_html += f"<h3>Dossier : {folder}</h3><ul>"
+                items = os.listdir(folder_path)
+                if not items:
+                    files_html += "<li><i>Aucun fichier</i></li>"
+                for item in items:
+                    item_path = os.path.join(folder_path, item)
+                    if os.path.isfile(item_path):
+                        file_url = f"/uploads/{folder}/{item}"
+                        can_delete = (user == "Admin" or user == folder)
+                        
+                        delete_form = ""
+                        if can_delete:
+                            delete_form = f"""
+                            <form action="/delete" method="POST" style="display:inline; margin-left: 10px;">
+                                <input type="hidden" name="file_path" value="{file_url}">
+                                <button type="submit" style="background:#dc3545; padding:2px 8px; font-size:0.8em;">Supprimer</button>
+                            </form>
+                            <form action="/share" method="POST" style="display:inline; margin-left: 5px;">
+                                <input type="hidden" name="file_path" value="{file_url}">
+                                <button type="submit" style="background:#ffc107; color:black; padding:2px 8px; font-size:0.8em;">Partager (1h)</button>
+                            </form>
+                            """
+                        files_html += f"<li><a href='{file_url}' target='_blank'>{item}</a>{delete_form}</li>"
+                files_html += "</ul>"
+
+        share_banner = ""
+        if share_link:
+            full_link = f"http://localhost:{PORT}{share_link}"
+            share_banner = f"""
+            <div style="background: #e2f0d9; padding: 10px; margin-bottom: 15px; border-left: 4px solid #385723;">
+                <strong>Lien temporaire généré (valide 1h) :</strong> <a href="{share_link}" target="_blank">{full_link}</a>
+            </div>
+            """
+
+        html = f"""
+        <!DOCTYPE html>
+        <html lang="fr">
+        <head>
+            <meta charset="UTF-8">
+            <title>Tableau de bord</title>
+            <style>
+                body {{ font-family: sans-serif; background: #f4f4f9; margin: 0; padding: 20px; }}
+                .container {{ max-width: 800px; background: white; padding: 20px; margin: auto; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }}
+                .header {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #ddd; padding-bottom: 10px; }}
+                button {{ background: #007BFF; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; }}
+                button:hover {{ background: #0056b3; }}
+                .logout {{ background: #dc3545; text-decoration: none; padding: 8px 12px; color: white; border-radius: 4px; }}
+                .logout:hover {{ background: #c82333; }}
+                ul {{ padding-left: 20px; }}
+                li {{ margin: 8px 0; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h2>Bienvenue, {user} !</h2>
+                    <a href="/logout" class="logout">Se déconnecter</a>
+                </div>
+                {share_banner}
+                <h3>Use/Mettre en ligne un fichier</h3>
+                <form action="/upload" method="POST" enctype="multipart/form-data">
+                    <input type="file" name="file" required>
+                    <button type="submit">Envoyer</button>
+                </form>
+                <hr>
+                <h2>Fichiers disponibles</h2>
+                {files_html}
             </div>
         </body>
         </html>
         """
-        self.send_response(200)
-        self.send_header("Content-type", "text/html; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(html_content.encode("utf-8"))
-
-    def list_directory(self, path):
-        try:
-            list_dir = os.listdir(path)
-        except os.error:
-            self.send_error(404, "No permission to list directory")
-            return None
-        
-        logged_in_user = self.check_auth() or "Visiteur"
-        user_role = USERS_DB.get(logged_in_user, {}).get("role", "user")
-
-        list_dir.sort(key=lambda a: (not os.path.isdir(os.path.join(path, a)), a.lower()))
-        f = io.BytesIO()
-        displaypath = html.escape(urllib.parse.unquote(self.path))
-        
-        # En-tête HTML avec Bootstrap 5 + Bootstrap Icons
-        f.write(b'<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">')
-        f.write(b'<meta name="viewport" content="width=device-width, initial-scale=1">')
-        f.write(f'<title>Echange de Fichiers - {displaypath}</title>'.encode('utf-8'))
-        f.write(b'<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">')
-        f.write(b'<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">')
-        f.write(b'</head><body class="bg-light">')
-        
-        # Navbar élégante
-        f.write(b'<nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow-sm mb-4"><div class="container">')
-        f.write(b'<a class="navbar-brand font-monospace fw-bold" href="/"><i class="bi bi-cloud-arrow-down-fill text-primary me-2"></i>Echange Cloud</a>')
-        f.write(b'<div class="d-flex align-items-center gap-3">')
-        
-        role_badge = '<span class="badge bg-danger">Admin</span>' if user_role == "admin" else '<span class="badge bg-info text-dark">User</span>'
-        f.write(f'<span class="text-light me-2"><i class="bi bi-person-circle me-1"></i>{logged_in_user} {role_badge}</span>'.encode('utf-8'))
-        f.write(b'<a href="/logout" class="btn btn-outline-danger btn-sm"><i class="bi bi-box-arrow-right me-1"></i>Deconnexion</a>')
-        f.write(b'</div></div></nav>')
-        
-        f.write(b'<div class="container">')
-        
-        # Carte d'Upload de fichiers
-        f.write(b'<div class="card shadow-sm mb-4"><div class="card-body">')
-        f.write(b'<h5 class="card-title mb-3"><i class="bi bi-upload text-success me-2"></i>Televerser un nouveau fichier</h5>')
-        f.write(b'<form action="/" method="POST" enctype="multipart/form-data" class="row g-2 align-items-center">')
-        f.write(b'<div class="col-auto flex-grow-1"><input class="form-control" type="file" name="file" required></div>')
-        f.write(b'<div class="col-auto"><button type="submit" class="btn btn-success fw-bold"><i class="bi bi-cloud-upload me-1"></i>Uploader</button></div>')
-        f.write(b'</form></div></div>')
-        
-        # Liste des fichiers sous forme de carte moderne
-        f.write(b'<div class="card shadow-sm"><div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">')
-        f.write(f'<h5 class="mb-0 text-secondary"><i class="bi bi-folder2-open me-2"></i>Contenu : <span class="text-dark fw-bold">{displaypath}</span></h5>'.encode('utf-8'))
-        f.write(b'</div><ul class="list-group list-group-flush">')
-        
-        fichiers_a_masquer = ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "lancement.bat"]
-
-        for name in list_dir:
-            if user_role != "admin" and name.lower() in fichiers_a_masquer:
-                continue
-
-            fullname = os.path.join(path, name)
-            is_dir = os.path.isdir(fullname)
-            displayname = name + "/" if is_dir else name
-            linkname = name + "/" if is_dir else name
-            
-            icon_class = self.get_file_icon(name, is_dir)
-            
-            f.write(b'<li class="list-group-item d-flex justify-content-between align-items-center py-3">')
-            f.write(b'<div class="d-flex align-items-center">')
-            f.write(f'<i class="bi {icon_class} fs-4 me-3"></i>'.encode('utf-8'))
-            f.write(f'<a href="{urllib.parse.quote(linkname)}" class="text-decoration-none text-dark fw-semibold">{html.escape(displayname)}</a>'.encode('utf-8'))
-            f.write(b'</div>')
-            
-            f.write(b'<div class="btn-group">')
-            f.write(f'<a href="{urllib.parse.quote(linkname)}" class="btn btn-sm btn-outline-primary"><i class="bi bi-download me-1"></i>Ouvrir</a>'.encode('utf-8'))
-            
-            if user_role == "admin" and name.lower() not in fichiers_a_masquer:
-                f.write(f'<a href="/delete?file={urllib.parse.quote(name)}" class="btn btn-sm btn-outline-danger" onclick="return confirm(\'Voulez-vous vraiment supprimer {html.escape(name)} ?\');"><i class="bi bi-trash-fill"></i></a>'.encode('utf-8'))
-            
-            f.write(b'</div></li>')
-        
-        f.write(b'</ul></div></div></body></html>')
-        length = f.tell()
-        f.seek(0)
-        self.send_response(200)
-        self.send_header("Content-type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(length))
-        self.end_headers()
-        return f
-
-import os
+        self.wfile.write(html.encode("utf-8"))
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    server_address = ("0.0.0.0", port)
-    httpd = http.server.ThreadingHTTPServer(server_address, SecureHandler)
-    print(f"[*] Serveur lancé et à l'écoute sur le port {port}")
-    httpd.serve_forever()
+    with socketserver.TCPServer(("", PORT), SecureHandler) as httpd:
+        print(f"Serveur actif sur le port {PORT}...")
+        log_activity("Serveur démarré.")
+        httpd.serve_forever()
