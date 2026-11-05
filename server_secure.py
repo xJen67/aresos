@@ -448,55 +448,80 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     return None
 
         list_dir.sort(key=lambda a: (not os.path.isdir(os.path.join(path, a)), a.lower()))
-        f = io.BytesIO()
         displaypath = html.escape(urllib.parse.unquote(self.path))
 
-        f.write(b'<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">')
-        f.write(b'<meta name="viewport" content="width=device-width, initial-scale=1">')
-        f.write(f'<title>Echange de Fichiers - {displaypath}</title>'.encode('utf-8'))
-        f.write(b'<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">')
-        f.write(b'<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">')
-        f.write(b'</head><body class="bg-light">')
+        # Construction de toute la page HTML en chaînes de caractères normales (str)
+        html_content = f"""<!DOCTYPE html>
+        <html lang="fr">
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Echange de Fichiers - {displaypath}</title>
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
+        </head>
+        <body class="bg-light">
+            <nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow-sm mb-4">
+                <div class="container">
+                    <a class="navbar-brand font-monospace fw-bold" href="/"><i class="bi bi-cloud-arrow-down-fill text-warning me-2"></i>Aresos Cloud</a>
+                    <div class="d-flex align-items-center gap-3">
+                        <span class="text-light small"><i class="bi bi-person-circle me-1 text-warning"></i><b>{html.escape(logged_in_user)}</b> ({html.escape(user_role)})</span>
+                        <a href="/logout" class="btn btn-outline-light btn-sm"><i class="bi bi-box-arrow-right me-1"></i>Déconnexion</a>
+                    </div>
+                </div>
+            </nav>
+            <div class="container pb-5">
+                <div class="card shadow-sm mb-4">
+                    <div class="card-body">
+                        <h5 class="card-title fw-bold mb-3"><i class="bi bi-cloud-upload-fill text-primary me-2"></i>Mettre en ligne un fichier</h5>
+                        <form action="" method="POST" enctype="multipart/form-data" class="row g-3">"""
 
-        f.write(b'<nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow-sm mb-4"><div class="container">')
-        f.write(b'<a class="navbar-brand font-monospace fw-bold" href="/"><i class="bi bi-cloud-arrow-down-fill text-warning me-2"></i>Aresos Cloud</a>')
-        f.write(b'<div class="d-flex align-items-center gap-3">')
-        f.write(f'<span class="text-light small"><i class="bi bi-person-circle me-1 text-warning"></i><b>{html.escape(logged_in_user)}</b> ({html.escape(user_role)})</span>'.encode('utf-8'))
-        f.write('<a href="/logout" class="btn btn-outline-light btn-sm"><i class="bi bi-box-arrow-right me-1"></i>Déconnexion</a>'.encode('utf-8'))
-        f.write(b'</div></div></nav>')
-
-        f.write(b'<div class="container pb-5">')
-
-        f.write(b'<div class="card shadow-sm mb-4"><div class="card-body">')
-        f.write(b'<h5 class="card-title fw-bold mb-3"><i class="bi bi-cloud-upload-fill text-primary me-2"></i>Mettre en ligne un fichier</h5>')
-        f.write(b'<form action="" method="POST" enctype="multipart/form-data" class="row g-3">')
-        
         if user_role == "admin":
-            f.write(b'<div class="col-md-4"><label class="form-label small fw-semibold">Dossier destinataire</label>')
-            f.write(b'<select name="target_folder" class="form-select form-select-sm">')
+            html_content += f"""
+                            <div class="col-md-4">
+                                <label class="form-label small fw-semibold">Dossier destinataire</label>
+                                <select name="target_folder" class="form-select form-select-sm">"""
             for u in USERS_DB.keys():
-                f.write(f'<option value="{u}">{u}</option>'.encode('utf-8'))
-            f.write(b'</select></div>')
-            f.write(b'<div class="col-md-8">')
+                html_content += f'<option value="{u}">{u}</option>'
+            html_content += """
+                                </select>
+                            </div>
+                            <div class="col-md-8">"""
         else:
-            f.write(f'<input type="hidden" name="target_folder" value="{logged_in_user}">')
-            f.write(b'<div class="col-12">')
+            html_content += f'<input type="hidden" name="target_folder" value="{logged_in_user}">'
+            html_content += '<div class="col-12">'
 
-        f.write(b'<label class="form-label small fw-semibold">Sélectionner le fichier</label>')
-        f.write(b'<div class="input-group">')
-        f.write(b'<input type="file" name="file" class="form-control form-control-sm" required>')
-        f.write(b'<button type="submit" class="btn btn-primary btn-sm px-4"><i class="bi bi-upload me-1"></i>Envoyer</button>')
-        f.write(b'</div></div></form></div></div>')
+        html_content += """
+                            <label class="form-label small fw-semibold">Sélectionner le fichier</label>
+                            <div class="input-group">
+                                <input type="file" name="file" class="form-control form-control-sm" required>
+                                <button type="submit" class="btn btn-primary btn-sm px-4"><i class="bi bi-upload me-1"></i>Envoyer</button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
 
-        f.write(b'<div class="card shadow-sm"><div class="card-body">')
-        f.write(f'<h4 class="card-title fw-bold mb-3"><i class="bi bi-folder2-open me-2 text-warning"></i>Explorateur : <span class="text-muted font-monospace fs-6">{displaypath}</span></h4>'.encode('utf-8'))
-        
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <h4 class="card-title fw-bold mb-3"><i class="bi bi-folder2-open me-2 text-warning"></i>Explorateur : <span class="text-muted font-monospace fs-6">{displaypath}</span></h4>"""
+
         if self.path != "/":
             parent_path = os.path.dirname(os.path.dirname(self.path)) + "/"
-            f.write(f'<p><a href="{parent_path}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i>Dossier parent</a></p>'.encode('utf-8'))
+            html_content += f'<p><a href="{parent_path}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i>Dossier parent</a></p>'
 
-        f.write(b'<div class="table-responsive"><table class="table table-hover align-middle">')
-        f.write(b'<thead class="table-dark"><tr><th>Nom</th><th>Type</th><th>Propriétaire</th><th class="text-end">Actions</th></tr></thead><tbody>')
+        html_content += """
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th>Nom</th>
+                                    <th>Type</th>
+                                    <th>Propriétaire</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>"""
 
         for name in list_dir:
             fullname = os.path.join(path, name)
@@ -517,16 +542,17 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 link = urllib.parse.quote(name)
                 type_str = "Fichier"
 
-            f.write(b'<tr>')
-            f.write(f'<td><i class="bi {icon} me-2 fs-5"></i><a href="{link}" class="text-decoration-none fw-semibold text-dark">{display_name}</a></td>'.encode('utf-8'))
-            f.write(f'<td><span class="badge bg-light text-dark border">{type_str}</span></td>'.encode('utf-8'))
-            f.write(f'<td><span class="small text-muted">{owner}</span></td>'.encode('utf-8'))
-            
-            f.write(b'<td class="text-end">')
+            html_content += f"""
+                                <tr>
+                                    <td><i class="bi {icon} me-2 fs-5"></i><a href="{link}" class="text-decoration-none fw-semibold text-dark">{display_name}</a></td>
+                                    <td><span class="badge bg-light text-dark border">{type_str}</span></td>
+                                    <td><span class="small text-muted">{owner}</span></td>
+                                    <td class="text-end">"""
+
             if not is_dir:
-                f.write(f'<a href="/generate-link?file={urllib.parse.quote(rel_path)}" class="btn btn-outline-info btn-sm me-1" title="Créer un lien de partage temporaire"><i class="bi bi-share"></i></a>'.encode('utf-8'))
-                f.write(f'<a href="{link}" download class="btn btn-outline-success btn-sm me-1" title="Télécharger"><i class="bi bi-download"></i></a>'.encode('utf-8'))
-            
+                html_content += f'<a href="/generate-link?file={urllib.parse.quote(rel_path)}" class="btn btn-outline-info btn-sm me-1" title="Créer un lien de partage temporaire"><i class="bi bi-share"></i></a>'
+                html_content += f'<a href="{link}" download class="btn btn-outline-success btn-sm me-1" title="Télécharger"><i class="bi bi-download"></i></a>'
+
             can_delete = False
             if user_role == "admin":
                 can_delete = True
@@ -534,29 +560,29 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 can_delete = True
 
             if can_delete and name.lower() not in ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "lancement.bat"]:
-                f.write(f'<a href="/delete?file={urllib.parse.quote(rel_path)}" class="btn btn-outline-danger btn-sm" onclick="return confirm(\'Êtes-vous sûr de vouloir supprimer cet élément ?\');" title="Supprimer"><i class="bi bi-trash"></i></a>'.encode('utf-8'))
-            
-            f.write(b'</td></tr>')
+                html_content += f'<a href="/delete?file={urllib.parse.quote(rel_path)}" class="btn btn-outline-danger btn-sm" onclick="return confirm(\'Êtes-vous sûr de vouloir supprimer cet élément ?\');" title="Supprimer"><i class="bi bi-trash"></i></a>'
 
-        f.write(b'</tbody></table></div></div></div></div></body></html>')
-        
-        length = f.tell()
-        f.seek(0)
+            html_content += """
+                                    </td>
+                                </tr>"""
+
+        html_content += """
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        </body>
+        </html>"""
+
+        # Encodage global propre en UTF-8 à l'envoi
+        response_bytes = html_content.encode('utf-8')
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(length))
+        self.send_header("Content-Length", str(len(response_bytes)))
         self.end_headers()
+        
         if self.command == 'GET':
-            self.wfile.write(f.read())
+            self.wfile.write(response_bytes)
         return None
-
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 8000))
-    server_address = ('', port)
-    httpd = http.server.HTTPServer(server_address, SecureHandler)
-    log_event(f"[*] Serveur sécurisé lancé sur le port {port}...")
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        log_event("[*] Arrêt du serveur.")
-        httpd.server_close()
