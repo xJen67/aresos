@@ -450,7 +450,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         list_dir.sort(key=lambda a: (not os.path.isdir(os.path.join(path, a)), a.lower()))
         displaypath = html.escape(urllib.parse.unquote(self.path))
 
-        # Construction de toute la page HTML en chaînes de caractères normales (str)
         html_content = f"""<!DOCTYPE html>
         <html lang="fr">
         <head>
@@ -576,7 +575,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         </body>
         </html>"""
 
-        # Encodage global propre en UTF-8 à l'envoi
         response_bytes = html_content.encode('utf-8')
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
@@ -586,3 +584,14 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         if self.command == 'GET':
             self.wfile.write(response_bytes)
         return None
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 8000))
+    server_address = ('', port)
+    httpd = http.server.HTTPServer(server_address, SecureHandler)
+    log_event(f"[*] Serveur sécurisé lancé sur le port {port}...")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        log_event("[*] Arrêt du serveur.")
+        httpd.server_close()
