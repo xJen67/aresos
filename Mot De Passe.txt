@@ -1,9 +1,9 @@
 user : Viktor
-password : 1234
-role : user
+password : Toby.2010
+role : admin
 
 user : Admin
-password : 2
+password : Toby.2010
 role : admin
 
 user : Hugo
