@@ -462,7 +462,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         f.write(b'<a class="navbar-brand font-monospace fw-bold" href="/"><i class="bi bi-cloud-arrow-down-fill text-warning me-2"></i>Aresos Cloud</a>')
         f.write(b'<div class="d-flex align-items-center gap-3">')
         f.write(f'<span class="text-light small"><i class="bi bi-person-circle me-1 text-warning"></i><b>{html.escape(logged_in_user)}</b> ({html.escape(user_role)})</span>'.encode('utf-8'))
-        f.write(b'<a href="/logout" class="btn btn-outline-light btn-sm"><i class="bi bi-box-arrow-right me-1"></i>Déconnexion</a>')
+        f.write('<a href="/logout" class="btn btn-outline-light btn-sm"><i class="bi bi-box-arrow-right me-1"></i>Déconnexion</a>'.encode('utf-8'))
         f.write(b'</div></div></nav>')
 
         f.write(b'<div class="container pb-5">')
