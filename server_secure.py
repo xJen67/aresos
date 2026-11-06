@@ -85,6 +85,12 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 pass
         return None
 
+    def translate_path(self, path):
+        # Redirige toutes les requêtes de fichiers/dossiers vers UPLOAD_DIR
+        path = super().translate_path(path)
+        relpath = os.path.relpath(path, os.getcwd())
+        return os.path.join(UPLOAD_DIR, relpath)
+
     def get_file_icon(self, filename, is_dir):
         if is_dir:
             return "bi-folder-fill text-warning"
@@ -215,7 +221,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     is_in_user_dir = target_path.startswith(user_prefix)
                     
                     if user_role == "admin" or is_owner or is_in_user_dir:
-                        protected_files = ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "lancement.bat"]
+                        protected_files = ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "server_secure_3.py", "lancement.bat"]
                         if os.path.basename(target_path).lower() not in protected_files and os.path.exists(target_path):
                             try:
                                 if os.path.isdir(target_path):
@@ -237,7 +243,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         path_decoded = urllib.parse.unquote(parsed_url.path).lstrip('/')
-        fichiers_sensibles = ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "lancement.bat", "server.log"]
+        fichiers_sensibles = ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "server_secure_3.py", "lancement.bat", "server.log"]
         
         if path_decoded.lower() in fichiers_sensibles and user_role != "admin":
             log_event(f"ALERTE 403 : {logged_in_user} a tenté d'accéder au fichier sensible {path_decoded}")
@@ -558,7 +564,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             elif owner == logged_in_user:
                 can_delete = True
 
-            if can_delete and name.lower() not in ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "lancement.bat"]:
+            if can_delete and name.lower() not in ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "server_secure_3.py", "lancement.bat"]:
                 html_content += f'<a href="/delete?file={urllib.parse.quote(rel_path)}" class="btn btn-outline-danger btn-sm" onclick="return confirm(\'Êtes-vous sûr de vouloir supprimer cet élément ?\');" title="Supprimer"><i class="bi bi-trash"></i></a>'
 
             html_content += """
