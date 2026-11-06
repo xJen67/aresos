@@ -64,8 +64,12 @@ SESSIONS = {}  # session_id -> username
 FILE_OWNERS = {} # filename (relative path) -> username
 TEMP_LINKS = {} # token -> {"filepath": ..., "expires": ...}
 
-UPLOAD_DIR = os.path.join(os.getcwd(), "Echange de fichiers")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# Utilisation directe de la racine du projet (plus de dossier "Echange de fichiers")
+UPLOAD_DIR = os.getcwd()
+
+# Création du dossier Fichier commun et des dossiers personnels
+COMMUN_DIR = os.path.join(UPLOAD_DIR, "Fichier commun")
+os.makedirs(COMMUN_DIR, exist_ok=True)
 
 for username in USERS_DB.keys():
     user_folder = os.path.join(UPLOAD_DIR, username)
@@ -86,7 +90,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         return None
 
     def translate_path(self, path):
-        # Redirige toutes les requêtes de fichiers/dossiers vers UPLOAD_DIR
         path = super().translate_path(path)
         relpath = os.path.relpath(path, os.getcwd())
         return os.path.join(UPLOAD_DIR, relpath)
@@ -169,7 +172,8 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 if target_path.startswith(UPLOAD_DIR):
                     if user_role != "admin":
                         user_prefix = os.path.join(UPLOAD_DIR, logged_in_user)
-                        if not target_path.startswith(user_prefix):
+                        commun_prefix = os.path.join(UPLOAD_DIR, "Fichier commun")
+                        if not target_path.startswith(user_prefix) and not target_path.startswith(commun_prefix):
                             log_event(f"ALERTE 403 : {logged_in_user} a tenté de générer un lien pour {rel_file}")
                             self.send_forbidden("Accès refusé à ce fichier.")
                             return
@@ -218,10 +222,12 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 if target_path.startswith(UPLOAD_DIR):
                     is_owner = FILE_OWNERS.get(rel_file) == logged_in_user
                     user_prefix = os.path.join(UPLOAD_DIR, logged_in_user)
+                    commun_prefix = os.path.join(UPLOAD_DIR, "Fichier commun")
                     is_in_user_dir = target_path.startswith(user_prefix)
+                    is_in_commun = target_path.startswith(commun_prefix)
                     
-                    if user_role == "admin" or is_owner or is_in_user_dir:
-                        protected_files = ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "server_secure_3.py", "lancement.bat"]
+                    if user_role == "admin" or is_owner or is_in_user_dir or is_in_commun:
+                        protected_files = ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "server_secure_3.py", "lancement.bat", "server.log"]
                         if os.path.basename(target_path).lower() not in protected_files and os.path.exists(target_path):
                             try:
                                 if os.path.isdir(target_path):
@@ -253,7 +259,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         if path_decoded:
             parts_path = path_decoded.split('/')
             first_folder = parts_path[0]
-            if first_folder in USERS_DB and user_role != "admin" and first_folder != logged_in_user:
+            if first_folder.lower() != "fichier commun" and first_folder in USERS_DB and user_role != "admin" and first_folder != logged_in_user:
                 log_event(f"ALERTE 403 : {logged_in_user} a tenté d'accéder au dossier de {first_folder}")
                 self.send_forbidden("Accès refusé à ce dossier personnel.")
                 return
@@ -315,7 +321,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     val_data = val_data.rstrip(b'\r\n--')
                     folder_val = val_data.decode('utf-8').strip()
                     if folder_val:
-                        if user_role == "admin" or folder_val == logged_in_user:
+                        if user_role == "admin" or folder_val == logged_in_user or folder_val.lower() == "fichier commun":
                             target_subfolder = folder_val
 
             destination_dir = os.path.join(UPLOAD_DIR, target_subfolder)
@@ -433,7 +439,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
 
     def list_directory(self, path):
         try:
-            list_dir = os.listdir(path)
+            all_items = os.listdir(path)
         except os.error:
             self.send_error(404, "No permission to list directory")
             return None
@@ -445,13 +451,22 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         if rel_current == ".":
             rel_current = ""
 
+        # Filtrage strict pour les non-admins à la racine
         if user_role != "admin":
             if rel_current == "":
-                list_dir = [logged_in_user] if os.path.exists(os.path.join(UPLOAD_DIR, logged_in_user)) else []
+                list_dir = ["Fichier commun"]
+                if os.path.exists(os.path.join(UPLOAD_DIR, logged_in_user)):
+                    list_dir.append(logged_in_user)
             else:
-                if not rel_current.startswith(logged_in_user):
+                if rel_current.lower() == "fichier commun" or rel_current.startswith(logged_in_user):
+                    list_dir = all_items
+                else:
                     self.send_forbidden("Accès refusé.")
                     return None
+        else:
+            # Masquer les fichiers sensibles du projet pour l'admin dans l'explorateur web
+            hidden_items = ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "server_secure_3.py", "lancement.bat", "server.log"]
+            list_dir = [item for item in all_items if item.lower() not in hidden_items]
 
         list_dir.sort(key=lambda a: (not os.path.isdir(os.path.join(path, a)), a.lower()))
         displaypath = html.escape(urllib.parse.unquote(self.path))
@@ -485,7 +500,8 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             html_content += f"""
                             <div class="col-md-4">
                                 <label class="form-label small fw-semibold">Dossier destinataire</label>
-                                <select name="target_folder" class="form-select form-select-sm">"""
+                                <select name="target_folder" class="form-select form-select-sm">
+                                    <option value="Fichier commun">Fichier commun</option>"""
             for u in USERS_DB.keys():
                 html_content += f'<option value="{u}">{u}</option>'
             html_content += """
@@ -493,8 +509,18 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                             </div>
                             <div class="col-md-8">"""
         else:
-            html_content += f'<input type="hidden" name="target_folder" value="{logged_in_user}">'
-            html_content += '<div class="col-12">'
+            default_target = rel_current if rel_current else logged_in_user
+            if default_target.lower() not in [logged_in_user.lower(), "fichier commun"]:
+                default_target = logged_in_user
+            html_content += f"""
+                            <div class="col-md-4">
+                                <label class="form-label small fw-semibold">Dossier destinataire</label>
+                                <select name="target_folder" class="form-select form-select-sm">
+                                    <option value="{logged_in_user}">{logged_in_user} (Personnel)</option>
+                                    <option value="Fichier commun">Fichier commun</option>
+                                </select>
+                            </div>
+                            <div class="col-md-8">"""
 
         html_content += """
                             <label class="form-label small fw-semibold">Sélectionner le fichier</label>
@@ -512,7 +538,11 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     <h4 class="card-title fw-bold mb-3"><i class="bi bi-folder2-open me-2 text-warning"></i>Explorateur : <span class="text-muted font-monospace fs-6">{displaypath}</span></h4>"""
 
         if self.path != "/":
-            parent_path = os.path.dirname(os.path.dirname(self.path)) + "/"
+            path_parts = [p for p in self.path.split('/') if p]
+            if len(path_parts) > 1:
+                parent_path = "/" + "/".join(path_parts[:-1]) + "/"
+            else:
+                parent_path = "/"
             html_content += f'<p><a href="{parent_path}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i>Dossier parent</a></p>'
 
         html_content += """
@@ -538,11 +568,14 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             
             owner = FILE_OWNERS.get(rel_path, "-")
             if is_dir:
-                owner = name if name in USERS_DB else "Système"
+                if name.lower() == "fichier commun":
+                    owner = "Partagé"
+                else:
+                    owner = name if name in USERS_DB else "Système"
 
             if is_dir:
                 link = urllib.parse.quote(name) + "/"
-                type_str = "Dossier personnel" if name in USERS_DB else "Dossier"
+                type_str = "Dossier partagé" if name.lower() == "fichier commun" else ("Dossier personnel" if name in USERS_DB else "Dossier")
             else:
                 link = urllib.parse.quote(name)
                 type_str = "Fichier"
@@ -563,8 +596,10 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 can_delete = True
             elif owner == logged_in_user:
                 can_delete = True
+            elif rel_path.startswith("Fichier commun"):
+                can_delete = True # Tout le monde peut gérer les fichiers du dossier commun si besoin
 
-            if can_delete and name.lower() not in ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "server_secure_3.py", "lancement.bat"]:
+            if can_delete and name.lower() not in ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "server_secure_3.py", "lancement.bat", "fichier commun"]:
                 html_content += f'<a href="/delete?file={urllib.parse.quote(rel_path)}" class="btn btn-outline-danger btn-sm" onclick="return confirm(\'Êtes-vous sûr de vouloir supprimer cet élément ?\');" title="Supprimer"><i class="bi bi-trash"></i></a>'
 
             html_content += """
