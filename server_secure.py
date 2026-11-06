@@ -64,10 +64,8 @@ SESSIONS = {}  # session_id -> username
 FILE_OWNERS = {} # filename (relative path) -> username
 TEMP_LINKS = {} # token -> {"filepath": ..., "expires": ...}
 
-# Utilisation directe de la racine du projet (plus de dossier "Echange de fichiers")
 UPLOAD_DIR = os.getcwd()
 
-# Création du dossier Fichier commun et des dossiers personnels
 COMMUN_DIR = os.path.join(UPLOAD_DIR, "Fichier commun")
 os.makedirs(COMMUN_DIR, exist_ok=True)
 
@@ -321,7 +319,8 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     val_data = val_data.rstrip(b'\r\n--')
                     folder_val = val_data.decode('utf-8').strip()
                     if folder_val:
-                        if user_role == "admin" or folder_val == logged_in_user or folder_val.lower() == "fichier commun":
+                        # Autoriser l'envoi vers le fichier commun ou tout dossier utilisateur valide
+                        if user_role == "admin" or folder_val.lower() == "fichier commun" or folder_val in USERS_DB:
                             target_subfolder = folder_val
 
             destination_dir = os.path.join(UPLOAD_DIR, target_subfolder)
@@ -451,7 +450,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         if rel_current == ".":
             rel_current = ""
 
-        # Filtrage strict pour les non-admins à la racine
         if user_role != "admin":
             if rel_current == "":
                 list_dir = ["Fichier commun"]
@@ -464,7 +462,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_forbidden("Accès refusé.")
                     return None
         else:
-            # Masquer les fichiers sensibles du projet pour l'admin dans l'explorateur web
             hidden_items = ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "server_secure_3.py", "lancement.bat", "server.log"]
             list_dir = [item for item in all_items if item.lower() not in hidden_items]
 
@@ -494,35 +491,21 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 <div class="card shadow-sm mb-4">
                     <div class="card-body">
                         <h5 class="card-title fw-bold mb-3"><i class="bi bi-cloud-upload-fill text-primary me-2"></i>Mettre en ligne un fichier</h5>
-                        <form action="" method="POST" enctype="multipart/form-data" class="row g-3">"""
-
-        if user_role == "admin":
-            html_content += f"""
+                        <form action="" method="POST" enctype="multipart/form-data" class="row g-3">
                             <div class="col-md-4">
                                 <label class="form-label small fw-semibold">Dossier destinataire</label>
                                 <select name="target_folder" class="form-select form-select-sm">
                                     <option value="Fichier commun">Fichier commun</option>"""
-            for u in USERS_DB.keys():
-                html_content += f'<option value="{u}">{u}</option>'
-            html_content += """
-                                </select>
-                            </div>
-                            <div class="col-md-8">"""
-        else:
-            default_target = rel_current if rel_current else logged_in_user
-            if default_target.lower() not in [logged_in_user.lower(), "fichier commun"]:
-                default_target = logged_in_user
-            html_content += f"""
-                            <div class="col-md-4">
-                                <label class="form-label small fw-semibold">Dossier destinataire</label>
-                                <select name="target_folder" class="form-select form-select-sm">
-                                    <option value="{logged_in_user}">{logged_in_user} (Personnel)</option>
-                                    <option value="Fichier commun">Fichier commun</option>
-                                </select>
-                            </div>
-                            <div class="col-md-8">"""
+        
+        # Affichage de tous les utilisateurs dans le menu déroulant pour tout le monde
+        for u in USERS_DB.keys():
+            selected = "selected" if u.lower() == logged_in_user.lower() else ""
+            html_content += f'<option value="{u}" {selected}>{u}</option>'
 
         html_content += """
+                                </select>
+                            </div>
+                            <div class="col-md-8">
                             <label class="form-label small fw-semibold">Sélectionner le fichier</label>
                             <div class="input-group">
                                 <input type="file" name="file" class="form-control form-control-sm" required>
@@ -597,7 +580,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             elif owner == logged_in_user:
                 can_delete = True
             elif rel_path.startswith("Fichier commun"):
-                can_delete = True # Tout le monde peut gérer les fichiers du dossier commun si besoin
+                can_delete = True
 
             if can_delete and name.lower() not in ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "server_secure_3.py", "lancement.bat", "fichier commun"]:
                 html_content += f'<a href="/delete?file={urllib.parse.quote(rel_path)}" class="btn btn-outline-danger btn-sm" onclick="return confirm(\'Êtes-vous sûr de vouloir supprimer cet élément ?\');" title="Supprimer"><i class="bi bi-trash"></i></a>'
