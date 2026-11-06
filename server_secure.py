@@ -6,6 +6,7 @@ import html
 import shutil
 import uuid
 import datetime
+import hashlib
 from http import cookies
 
 def log_event(message):
@@ -43,7 +44,8 @@ def load_users():
                         current_pass = None
                         current_role = "user"
                     elif key == "password":
-                        current_pass = val
+                        # Hachage sécurisé du mot de passe en mémoire (SHA-256)
+                        current_pass = hashlib.sha256(val.encode('utf-8')).hexdigest()
                     elif key == "role":
                         current_role = val.lower()
                 
@@ -55,7 +57,8 @@ def load_users():
             log_event(f"[!] Erreur lors de la lecture du fichier : {e}")
     else:
         log_event(f"[!] Fichier '{filename}' introuvable. Compte de secours 'admin':'admin'")
-        users_db["admin"] = {"password": "admin", "role": "admin"}
+        default_pass = hashlib.sha256("admin".encode('utf-8')).hexdigest()
+        users_db["admin"] = {"password": default_pass, "role": "admin"}
         
     return users_db
 
@@ -275,7 +278,10 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             username = params.get("username", [""])[0].strip()
             password = params.get("password", [""])[0].strip()
             
-            if username in USERS_DB and USERS_DB[username]["password"] == password:
+            # Hachage du mot de passe fourni pour le comparer à celui stocké
+            hashed_password = hashlib.sha256(password.encode('utf-8')).hexdigest()
+            
+            if username in USERS_DB and USERS_DB[username]["password"] == hashed_password:
                 session_id = str(uuid.uuid4())
                 SESSIONS[session_id] = username
                 log_event(f"Succès de connexion : {username}")
