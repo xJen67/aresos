@@ -9,6 +9,9 @@ import datetime
 import hashlib
 from http import cookies
 
+# Configuration de votre lien cloud externe principal (ex: Google Drive ou Mega)
+EXTERNAL_CLOUD_LINK = "https://drive.google.com"  # Remplacez par votre lien de dossier partagé
+
 def log_event(message):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_line = f"[{timestamp}] {message}\n"
@@ -107,7 +110,9 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         if is_dir:
             return "bi-folder-fill text-warning"
         ext = os.path.splitext(filename)[1].lower()
-        if ext in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp']:
+        if ext == '.url':
+            return "bi-link-45deg text-success"
+        elif ext in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp']:
             return "bi-file-earmark-image-fill text-primary"
         elif ext in ['.pdf']:
             return "bi-file-earmark-pdf-fill text-danger"
@@ -167,10 +172,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     first_folder = rel_dir.split('/')[0] if '/' in rel_dir else rel_dir
                     if user_role == "admin" or first_folder.lower() == "fichier commun" or first_folder == logged_in_user:
                         zip_filename = f"{os.path.basename(target_dir) or 'cloud'}.zip"
-                        archive_bytes = io.BytesIO()
-                        shutil.make_archive(archive_bytes.name, 'zip', target_dir)
-                        
-                        # Création de l'archive ZIP en mémoire
                         zip_path = shutil.make_archive(os.path.join(UPLOAD_DIR, "temp_archive"), 'zip', target_dir)
                         self.send_response(200)
                         self.send_header("Content-type", "application/zip")
@@ -184,7 +185,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             self.send_forbidden("Téléchargement du dossier refusé.")
             return
 
-        # Aperçu rapide d'un fichier (Image, PDF, Texte)
+        # Aperçu rapide d'un fichier
         if parsed_url.path == "/preview":
             query_params = urllib.parse.parse_qs(parsed_url.query)
             if "file" in query_params:
@@ -329,9 +330,24 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
 
+        # Ouverture automatique des fichiers de raccourci .url
         path_decoded = urllib.parse.unquote(parsed_url.path).lstrip('/')
+        if path_decoded.endswith('.url'):
+            target_path = os.path.normpath(os.path.join(UPLOAD_DIR, path_decoded))
+            if os.path.exists(target_path):
+                try:
+                    with open(target_path, 'r', encoding='utf-8') as uf:
+                        for line in uf:
+                            if line.startswith('URL='):
+                                ext_url = line.strip().split('URL=', 1)[1]
+                                self.send_response(303)
+                                self.send_header('Location', ext_url)
+                                self.end_headers()
+                                return
+                except Exception:
+                    pass
+
         fichiers_sensibles = ["mot de passe.txt", "server_secure.py", "server_secure_2.py", "server_secure_3.py", "lancement.bat", "server.log"]
-        
         if path_decoded.lower() in fichiers_sensibles and user_role != "admin":
             log_event(f"ALERTE 403 : {logged_in_user} a tenté d'accéder au fichier sensible {path_decoded}")
             self.send_forbidden("Accès refusé : fichier réservé à l'administrateur.")
@@ -378,6 +394,35 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         if not logged_in_user:
             self.send_response(303)
             self.send_header('Location', '/login')
+            self.end_headers()
+            return
+
+        # Ajout d'un lien externe (Option 2 du formulaire)
+        if parsed_url.path == "/add-link":
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            params = urllib.parse.parse_qs(body)
+            
+            link_title = params.get("link_title", [""])[0].strip()
+            link_url = params.get("link_url", [""])[0].strip()
+            target_folder = params.get("target_folder", [logged_in_user])[0].strip()
+            
+            if link_title and link_url:
+                safe_title = "".join(c for c in link_title if c.isalnum() or c in (' ', '_', '-')).rstrip()
+                filename = f"{safe_title}.url"
+                destination_dir = os.path.join(UPLOAD_DIR, target_folder)
+                os.makedirs(destination_dir, exist_ok=True)
+                
+                filepath = os.path.join(destination_dir, filename)
+                with open(filepath, "w", encoding="utf-8") as uf:
+                    uf.write(f"[InternetShortcut]\nURL={link_url}\n")
+                
+                rel_path = os.path.relpath(filepath, UPLOAD_DIR).replace('\\', '/')
+                FILE_OWNERS[rel_path] = logged_in_user
+                log_event(f"Lien externe ajouté : {link_title} par {logged_in_user}")
+
+            self.send_response(303)
+            self.send_header('Location', '/')
             self.end_headers()
             return
 
@@ -586,42 +631,83 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 </div>
             </nav>
             <div class="container pb-5">
-                <!-- Card d'upload avec Drag & Drop -->
+                <!-- Zone d'envoi et de partage de liens -->
                 <div class="card shadow-sm mb-4">
                     <div class="card-body">
-                        <h5 class="card-title fw-bold mb-3"><i class="bi bi-cloud-upload-fill text-primary me-2"></i>Mettre en ligne un fichier</h5>
-                        <form id="uploadForm" action="" method="POST" enctype="multipart/form-data" class="row g-3">
-                            <div class="col-md-4">
-                                <label class="form-label small fw-semibold">Dossier destinataire</label>
-                                <select name="target_folder" class="form-select form-select-sm">
-                                    <option value="Fichier commun">Fichier commun</option>"""
+                        <ul class="nav nav-tabs mb-3" id="uploadTab" role="tablist">
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link active fw-semibold" id="file-tab" data-bs-toggle="tab" data-bs-target="#file-panel" type="button"><i class="bi bi-cloud-upload-fill text-primary me-1"></i> Mettre en ligne un fichier</button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link fw-semibold" id="link-tab" data-bs-toggle="tab" data-bs-target="#link-panel" type="button"><i class="bi bi-link-45deg text-success me-1"></i> Partager un gros fichier (Lien Google Drive / Mega)</button>
+                            </li>
+                        </ul>
+                        
+                        <div class="tab-content" id="uploadTabContent">
+                            <!-- Envoi de fichier local -->
+                            <div class="tab-pane fade show active" id="file-panel" role="tabpanel">
+                                <form id="uploadForm" action="" method="POST" enctype="multipart/form-data" class="row g-3">
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-semibold">Dossier destinataire</label>
+                                        <select name="target_folder" class="form-select form-select-sm">
+                                            <option value="Fichier commun">Fichier commun</option>"""
         
         for u in USERS_DB.keys():
             selected = "selected" if u.lower() == logged_in_user.lower() else ""
             html_content += f'<option value="{u}" {selected}>{u}</option>'
 
         html_content += """
-                                </select>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-8">
+                                        <label class="form-label small fw-semibold">Sélectionner ou glisser le fichier</label>
+                                        <div class="drag-area" id="dragArea">
+                                            <i class="bi bi-file-earmark-arrow-up display-6 text-primary mb-2"></i>
+                                            <p class="mb-1 small">Glissez-déposez votre fichier ici ou cliquez pour choisir</p>
+                                            <input type="file" name="file" id="fileInput" class="d-none" required>
+                                            <button type="button" class="btn btn-outline-primary btn-sm mt-2" onclick="document.getElementById('fileInput').click();">Choisir un fichier</button>
+                                        </div>
+                                        <div class="text-end mt-2">
+                                            <button type="submit" class="btn btn-primary btn-sm px-4"><i class="bi bi-upload me-1"></i>Envoyer</button>
+                                        </div>
+                                    </div>
+                                </form>
                             </div>
-                            <div class="col-md-8">
-                                <label class="form-label small fw-semibold">Sélectionner ou glisser le fichier</label>
-                                <div class="drag-area" id="dragArea">
-                                    <i class="bi bi-file-earmark-arrow-up display-6 text-primary mb-2"></i>
-                                    <p class="mb-1 small">Glissez-déposez votre fichier ici ou cliquez pour choisir</p>
-                                    <input type="file" name="file" id="fileInput" class="d-none" required>
-                                    <button type="button" class="btn btn-outline-primary btn-sm mt-2" onclick="document.getElementById('fileInput').click();">Choisir un fichier</button>
-                                </div>
-                                <div class="text-end mt-2">
-                                    <button type="submit" class="btn btn-primary btn-sm px-4"><i class="bi bi-upload me-1"></i>Envoyer</button>
-                                </div>
+
+                            <!-- Ajout d'un lien externe Google Drive / Mega -->
+                            <div class="tab-pane fade" id="link-panel" role="tabpanel">
+                                <form action="/add-link" method="POST" class="row g-3">
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-semibold">Dossier destinataire</label>
+                                        <select name="target_folder" class="form-select form-select-sm">
+                                            <option value="Fichier commun">Fichier commun</option>"""
+        for u in USERS_DB.keys():
+            selected = "selected" if u.lower() == logged_in_user.lower() else ""
+            html_content += f'<option value="{u}" {selected}>{u}</option>'
+
+        html_content += f"""
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-semibold">Titre du partage / Nom du fichier</label>
+                                        <input type="text" name="link_title" class="form-control form-control-sm" placeholder="Ex: Grosse vidéo de vacances" required>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-semibold">Lien externe (Google Drive, Mega, WeTransfer)</label>
+                                        <input type="url" name="link_url" class="form-control form-control-sm" placeholder="https://drive.google.com/..." required>
+                                    </div>
+                                    <div class="col-12 text-end">
+                                        <button type="submit" class="btn btn-success btn-sm px-4"><i class="bi bi-plus-circle me-1"></i> Publier le lien</button>
+                                    </div>
+                                </form>
                             </div>
-                        </form>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Message d'avertissement -->
+                <!-- Message d'avertissement mis à jour -->
                 <div class="alert alert-danger text-center fw-bold shadow-sm py-2 mb-4" role="alert">
-                    <i class="bi bi-exclamation-triangle-fill me-2"></i> Attention : Les fichiers stockés sont éphémères, pensez à télécharger vos fichiers importants !
+                    <i class="bi bi-exclamation-triangle-fill me-2"></i> Attention : Les fichiers déposés ici directement sont éphémères. Pensez à sauvegarder vos fichiers importants ou volumineux sur <u>Google Drive</u> ou <u>Mega</u> !
                 </div>
 
                 <!-- Explorateur de Fichiers -->
@@ -629,24 +715,28 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     <div class="card-body">
                         <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
                             <h4 class="card-title fw-bold m-0"><i class="bi bi-folder2-open me-2 text-warning"></i>Explorateur : <span class="text-muted font-monospace fs-6">{displaypath}</span></h4>
-                            <!-- Champ de recherche en temps réel -->
                             <div class="input-group input-group-sm" style="max-width: 300px;">
                                 <span class="input-group-text bg-white"><i class="bi bi-search text-muted"></i></span>
                                 <input type="text" id="searchInput" class="form-control" placeholder="Rechercher un fichier...">
                             </div>
                         </div>"""
 
+        html_content += f"""
+        <div class="d-flex justify-content-between flex-wrap gap-2 mb-3">"""
+        
         if self.path != "/":
             path_parts = [p for p in self.path.split('/') if p]
-            if len(path_parts) > 1:
-                parent_path = "/" + "/".join(path_parts[:-1]) + "/"
-            else:
-                parent_path = "/"
-            html_content += f"""
-            <div class="d-flex justify-content-between mb-3">
-                <a href="{parent_path}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i>Dossier parent</a>
+            parent_path = "/" + "/".join(path_parts[:-1]) + "/" if len(path_parts) > 1 else "/"
+            html_content += f'<a href="{parent_path}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i>Dossier parent</a>'
+        else:
+            html_content += '<div></div>'
+
+        html_content += f"""
+            <div class="d-flex gap-2">
+                <a href="{EXTERNAL_CLOUD_LINK}" target="_blank" class="btn btn-outline-success btn-sm"><i class="bi bi-cloud-plus-fill me-1"></i> Ouvrir le Cloud Google Drive / Mega</a>
                 <a href="/download-zip?dir={urllib.parse.quote(rel_current)}" class="btn btn-outline-dark btn-sm"><i class="bi bi-file-earmark-zip-fill text-warning me-1"></i>Télécharger le dossier (ZIP)</a>
-            </div>"""
+            </div>
+        </div>"""
 
         html_content += """
                     <div class="table-responsive">
@@ -668,7 +758,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             is_dir = os.path.isdir(fullname)
             rel_path = os.path.relpath(fullname, UPLOAD_DIR).replace('\\', '/')
             
-            # Statistiques du fichier (taille et date)
             try:
                 stat_info = os.stat(fullname)
                 size_str = format_size(stat_info.st_size) if not is_dir else "-"
@@ -687,24 +776,27 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 else:
                     owner = name if name in USERS_DB else "Système"
 
+            ext = os.path.splitext(name)[1].lower()
             if is_dir:
                 link = urllib.parse.quote(name) + "/"
                 type_str = "Dossier partagé" if name.lower() == "fichier commun" else ("Dossier personnel" if name in USERS_DB else "Dossier")
+            elif ext == '.url':
+                link = urllib.parse.quote(name)
+                type_str = "Lien Externe"
             else:
                 link = urllib.parse.quote(name)
                 type_str = "Fichier"
 
             html_content += f"""
                                 <tr class="file-row">
-                                    <td class="file-name"><i class="bi {icon} me-2 fs-5"></i><a href="{link}" class="text-decoration-none fw-semibold text-dark">{display_name}</a></td>
+                                    <td class="file-name"><i class="bi {icon} me-2 fs-5"></i><a href="{link}" {"target='_blank'" if ext == '.url' else ''} class="text-decoration-none fw-semibold text-dark">{display_name}</a></td>
                                     <td><span class="badge bg-light text-dark border">{type_str}</span></td>
                                     <td class="small text-muted">{size_str}</td>
                                     <td class="small text-muted">{mtime_str}</td>
                                     <td><span class="small text-muted">{owner}</span></td>
                                     <td class="text-end">"""
 
-            if not is_dir:
-                ext = os.path.splitext(name)[1].lower()
+            if not is_dir and ext != '.url':
                 if ext in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.pdf', '.txt', '.py', '.js', '.css', '.html', '.json', '.md']:
                     html_content += f'<button onclick="openPreview(\'/preview?file={urllib.parse.quote(rel_path)}\')" class="btn btn-outline-primary btn-sm me-1" title="Aperçu"><i class="bi bi-eye"></i></button>'
                 
@@ -751,7 +843,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
 
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
         <script>
-            // Recherche instantanée
             document.getElementById('searchInput').addEventListener('keyup', function() {
                 const filter = this.value.toLowerCase();
                 const rows = document.querySelectorAll('#fileTable .file-row');
@@ -761,50 +852,43 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 });
             });
 
-            // Modal d'aperçu
             function openPreview(url) {
                 document.getElementById('previewFrame').src = url;
                 const modal = new bootstrap.Modal(document.getElementById('previewModal'));
                 modal.show();
             }
 
-            // Gestion du Drag & Drop
             const dragArea = document.getElementById('dragArea');
             const fileInput = document.getElementById('fileInput');
 
-            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-                dragArea.addEventListener(eventName, preventDefaults, false);
-            });
+            if(dragArea && fileInput) {
+                ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                    dragArea.addEventListener(eventName, e => { e.preventDefault(); e.stopPropagation(); }, false);
+                });
 
-            function preventDefaults(e) {
-                e.preventDefault();
-                e.stopPropagation();
+                ['dragenter', 'dragover'].forEach(eventName => {
+                    dragArea.addEventListener(eventName, () => dragArea.classList.add('active'), false);
+                });
+
+                ['dragleave', 'drop'].forEach(eventName => {
+                    dragArea.addEventListener(eventName, () => dragArea.classList.remove('active'), false);
+                });
+
+                dragArea.addEventListener('drop', e => {
+                    const dt = e.dataTransfer;
+                    const files = dt.files;
+                    fileInput.files = files;
+                    if(files.length > 0) {
+                        dragArea.querySelector('p').textContent = "Fichier sélectionné : " + files[0].name;
+                    }
+                }, false);
+
+                fileInput.addEventListener('change', function() {
+                    if (this.files.length > 0) {
+                        dragArea.querySelector('p').textContent = "Fichier sélectionné : " + this.files[0].name;
+                    }
+                });
             }
-
-            ['dragenter', 'dragover'].forEach(eventName => {
-                dragArea.addEventListener(eventName, () => dragArea.classList.add('active'), false);
-            });
-
-            ['dragleave', 'drop'].forEach(eventName => {
-                dragArea.addEventListener(eventName, () => dragArea.classList.remove('active'), false);
-            });
-
-            dragArea.addEventListener('drop', handleDrop, false);
-
-            function handleDrop(e) {
-                const dt = e.dataTransfer;
-                const files = dt.files;
-                fileInput.files = files;
-                if(files.length > 0) {
-                    dragArea.querySelector('p').textContent = "Fichier sélectionné : " + files[0].name;
-                }
-            }
-
-            fileInput.addEventListener('change', function() {
-                if (this.files.length > 0) {
-                    dragArea.querySelector('p').textContent = "Fichier sélectionné : " + this.files[0].name;
-                }
-            });
         </script>
         </body>
         </html>"""
