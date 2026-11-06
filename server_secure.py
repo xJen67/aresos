@@ -319,7 +319,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     val_data = val_data.rstrip(b'\r\n--')
                     folder_val = val_data.decode('utf-8').strip()
                     if folder_val:
-                        # Autoriser l'envoi vers le fichier commun ou tout dossier utilisateur valide
                         if user_role == "admin" or folder_val.lower() == "fichier commun" or folder_val in USERS_DB:
                             target_subfolder = folder_val
 
@@ -497,7 +496,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                                 <select name="target_folder" class="form-select form-select-sm">
                                     <option value="Fichier commun">Fichier commun</option>"""
         
-        # Affichage de tous les utilisateurs dans le menu déroulant pour tout le monde
         for u in USERS_DB.keys():
             selected = "selected" if u.lower() == logged_in_user.lower() else ""
             html_content += f'<option value="{u}" {selected}>{u}</option>'
@@ -516,7 +514,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 </div>
             </div>
 
-            <div class="card shadow-sm">
+            <div class="card shadow-sm mb-4">
                 <div class="card-body">
                     <h4 class="card-title fw-bold mb-3"><i class="bi bi-folder2-open me-2 text-warning"></i>Explorateur : <span class="text-muted font-monospace fs-6">{displaypath}</span></h4>"""
 
@@ -594,6 +592,11 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                         </table>
                     </div>
                 </div>
+            </div>
+
+            <!-- Message d'avertissement en bas de page -->
+            <div class="alert alert-danger text-center fw-bold shadow-sm py-3" role="alert">
+                <i class="bi bi-exclamation-triangle-fill me-2"></i> Attention : Les fichiers stockés sont éphémères, pensez à télécharger vos fichiers importants !
             </div>
         </div>
         </body>
