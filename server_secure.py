@@ -44,7 +44,6 @@ def load_users():
                         current_pass = None
                         current_role = "user"
                     elif key == "password":
-                        # Hachage sécurisé du mot de passe en mémoire (SHA-256)
                         current_pass = hashlib.sha256(val.encode('utf-8')).hexdigest()
                     elif key == "role":
                         current_role = val.lower()
@@ -62,10 +61,19 @@ def load_users():
         
     return users_db
 
+def format_size(size_bytes):
+    if size_bytes == 0:
+        return "-"
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.1f} TB"
+
 USERS_DB = load_users()
-SESSIONS = {}  # session_id -> username
-FILE_OWNERS = {} # filename (relative path) -> username
-TEMP_LINKS = {} # token -> {"filepath": ..., "expires": ...}
+SESSIONS = {}
+FILE_OWNERS = {}
+TEMP_LINKS = {}
 
 UPLOAD_DIR = os.getcwd()
 
@@ -148,6 +156,78 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         user_role = USERS_DB.get(logged_in_user, {}).get("role", "user")
+
+        # Téléchargement d'un dossier sous forme de ZIP
+        if parsed_url.path == "/download-zip":
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+            if "dir" in query_params:
+                rel_dir = query_params["dir"][0]
+                target_dir = os.path.normpath(os.path.join(UPLOAD_DIR, rel_dir))
+                if target_dir.startswith(UPLOAD_DIR) and os.path.isdir(target_dir):
+                    first_folder = rel_dir.split('/')[0] if '/' in rel_dir else rel_dir
+                    if user_role == "admin" or first_folder.lower() == "fichier commun" or first_folder == logged_in_user:
+                        zip_filename = f"{os.path.basename(target_dir) or 'cloud'}.zip"
+                        archive_bytes = io.BytesIO()
+                        shutil.make_archive(archive_bytes.name, 'zip', target_dir)
+                        
+                        # Création de l'archive ZIP en mémoire
+                        zip_path = shutil.make_archive(os.path.join(UPLOAD_DIR, "temp_archive"), 'zip', target_dir)
+                        self.send_response(200)
+                        self.send_header("Content-type", "application/zip")
+                        self.send_header("Content-Disposition", f'attachment; filename="{zip_filename}"')
+                        self.end_headers()
+                        with open(zip_path, 'rb') as zf:
+                            shutil.copyfileobj(zf, self.wfile)
+                        os.remove(zip_path)
+                        log_event(f"Dossier {rel_dir} téléchargé en ZIP par {logged_in_user}")
+                        return
+            self.send_forbidden("Téléchargement du dossier refusé.")
+            return
+
+        # Aperçu rapide d'un fichier (Image, PDF, Texte)
+        if parsed_url.path == "/preview":
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+            if "file" in query_params:
+                rel_file = query_params["file"][0]
+                target_path = os.path.normpath(os.path.join(UPLOAD_DIR, rel_file))
+                if target_path.startswith(UPLOAD_DIR) and os.path.isfile(target_path):
+                    first_folder = rel_file.split('/')[0] if '/' in rel_file else rel_file
+                    if user_role == "admin" or first_folder.lower() == "fichier commun" or first_folder == logged_in_user:
+                        ext = os.path.splitext(target_path)[1].lower()
+                        filename = os.path.basename(target_path)
+                        
+                        if ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg']:
+                            mime = "image/png" if ext == '.png' else "image/jpeg"
+                            self.send_response(200)
+                            self.send_header("Content-type", mime)
+                            self.end_headers()
+                            with open(target_path, "rb") as f:
+                                shutil.copyfileobj(f, self.wfile)
+                            return
+                        elif ext == '.pdf':
+                            self.send_response(200)
+                            self.send_header("Content-type", "application/pdf")
+                            self.end_headers()
+                            with open(target_path, "rb") as f:
+                                shutil.copyfileobj(f, self.wfile)
+                            return
+                        elif ext in ['.txt', '.py', '.js', '.css', '.html', '.json', '.md']:
+                            with open(target_path, "r", encoding="utf-8", errors="ignore") as f:
+                                text_content = html.escape(f.read())
+                            self.send_response(200)
+                            self.send_header("Content-type", "text/html; charset=utf-8")
+                            self.end_headers()
+                            self.wfile.write(f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
+                            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+                            <title>Aperçu - {filename}</title></head><body class="bg-dark text-light p-4">
+                            <h4 class="fw-bold mb-3">{filename}</h4>
+                            <pre class="bg-secondary p-3 rounded" style="white-space: pre-wrap;"><code>{text_content}</code></pre>
+                            </body></html>""".encode('utf-8'))
+                            return
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"Apercu non disponible.")
+            return
 
         if parsed_url.path.startswith("/temp-download/"):
             token = parsed_url.path.split("/")[-1]
@@ -278,7 +358,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             username = params.get("username", [""])[0].strip()
             password = params.get("password", [""])[0].strip()
             
-            # Hachage du mot de passe fourni pour le comparer à celui stocké
             hashed_password = hashlib.sha256(password.encode('utf-8')).hexdigest()
             
             if username in USERS_DB and USERS_DB[username]["password"] == hashed_password:
@@ -481,6 +560,20 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             <title>Echange de Fichiers - {displaypath}</title>
             <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
             <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
+            <style>
+                .drag-area {{
+                    border: 2px dashed #0d6efd;
+                    border-radius: 8px;
+                    padding: 20px;
+                    text-align: center;
+                    background-color: #f8f9fa;
+                    cursor: pointer;
+                    transition: background-color 0.2s ease;
+                }}
+                .drag-area.active {{
+                    background-color: #e2e6ea;
+                }}
+            </style>
         </head>
         <body class="bg-light">
             <nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow-sm mb-4">
@@ -493,10 +586,11 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 </div>
             </nav>
             <div class="container pb-5">
+                <!-- Card d'upload avec Drag & Drop -->
                 <div class="card shadow-sm mb-4">
                     <div class="card-body">
                         <h5 class="card-title fw-bold mb-3"><i class="bi bi-cloud-upload-fill text-primary me-2"></i>Mettre en ligne un fichier</h5>
-                        <form action="" method="POST" enctype="multipart/form-data" class="row g-3">
+                        <form id="uploadForm" action="" method="POST" enctype="multipart/form-data" class="row g-3">
                             <div class="col-md-4">
                                 <label class="form-label small fw-semibold">Dossier destinataire</label>
                                 <select name="target_folder" class="form-select form-select-sm">
@@ -510,24 +604,37 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                                 </select>
                             </div>
                             <div class="col-md-8">
-                            <label class="form-label small fw-semibold">Sélectionner le fichier</label>
-                            <div class="input-group">
-                                <input type="file" name="file" class="form-control form-control-sm" required>
-                                <button type="submit" class="btn btn-primary btn-sm px-4"><i class="bi bi-upload me-1"></i>Envoyer</button>
+                                <label class="form-label small fw-semibold">Sélectionner ou glisser le fichier</label>
+                                <div class="drag-area" id="dragArea">
+                                    <i class="bi bi-file-earmark-arrow-up display-6 text-primary mb-2"></i>
+                                    <p class="mb-1 small">Glissez-déposez votre fichier ici ou cliquez pour choisir</p>
+                                    <input type="file" name="file" id="fileInput" class="d-none" required>
+                                    <button type="button" class="btn btn-outline-primary btn-sm mt-2" onclick="document.getElementById('fileInput').click();">Choisir un fichier</button>
+                                </div>
+                                <div class="text-end mt-2">
+                                    <button type="submit" class="btn btn-primary btn-sm px-4"><i class="bi bi-upload me-1"></i>Envoyer</button>
+                                </div>
                             </div>
-                        </div>
-                    </form>
+                        </form>
+                    </div>
                 </div>
-            </div>
 
-            <!-- Message d'avertissement placé juste sous le bloc d'envoi -->
-            <div class="alert alert-danger text-center fw-bold shadow-sm py-2 mb-4" role="alert">
-                <i class="bi bi-exclamation-triangle-fill me-2"></i> Attention : Les fichiers stockés sont éphémères, pensez à télécharger vos fichiers importants !
-            </div>
+                <!-- Message d'avertissement -->
+                <div class="alert alert-danger text-center fw-bold shadow-sm py-2 mb-4" role="alert">
+                    <i class="bi bi-exclamation-triangle-fill me-2"></i> Attention : Les fichiers stockés sont éphémères, pensez à télécharger vos fichiers importants !
+                </div>
 
-            <div class="card shadow-sm mb-4">
-                <div class="card-body">
-                    <h4 class="card-title fw-bold mb-3"><i class="bi bi-folder2-open me-2 text-warning"></i>Explorateur : <span class="text-muted font-monospace fs-6">{displaypath}</span></h4>"""
+                <!-- Explorateur de Fichiers -->
+                <div class="card shadow-sm mb-4">
+                    <div class="card-body">
+                        <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+                            <h4 class="card-title fw-bold m-0"><i class="bi bi-folder2-open me-2 text-warning"></i>Explorateur : <span class="text-muted font-monospace fs-6">{displaypath}</span></h4>
+                            <!-- Champ de recherche en temps réel -->
+                            <div class="input-group input-group-sm" style="max-width: 300px;">
+                                <span class="input-group-text bg-white"><i class="bi bi-search text-muted"></i></span>
+                                <input type="text" id="searchInput" class="form-control" placeholder="Rechercher un fichier...">
+                            </div>
+                        </div>"""
 
         if self.path != "/":
             path_parts = [p for p in self.path.split('/') if p]
@@ -535,15 +642,21 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 parent_path = "/" + "/".join(path_parts[:-1]) + "/"
             else:
                 parent_path = "/"
-            html_content += f'<p><a href="{parent_path}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i>Dossier parent</a></p>'
+            html_content += f"""
+            <div class="d-flex justify-content-between mb-3">
+                <a href="{parent_path}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left me-1"></i>Dossier parent</a>
+                <a href="/download-zip?dir={urllib.parse.quote(rel_current)}" class="btn btn-outline-dark btn-sm"><i class="bi bi-file-earmark-zip-fill text-warning me-1"></i>Télécharger le dossier (ZIP)</a>
+            </div>"""
 
         html_content += """
                     <div class="table-responsive">
-                        <table class="table table-hover align-middle">
+                        <table class="table table-hover align-middle" id="fileTable">
                             <thead class="table-dark">
                                 <tr>
                                     <th>Nom</th>
                                     <th>Type</th>
+                                    <th>Taille</th>
+                                    <th>Modifié le</th>
                                     <th>Propriétaire</th>
                                     <th class="text-end">Actions</th>
                                 </tr>
@@ -555,6 +668,15 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             is_dir = os.path.isdir(fullname)
             rel_path = os.path.relpath(fullname, UPLOAD_DIR).replace('\\', '/')
             
+            # Statistiques du fichier (taille et date)
+            try:
+                stat_info = os.stat(fullname)
+                size_str = format_size(stat_info.st_size) if not is_dir else "-"
+                mtime_str = datetime.datetime.fromtimestamp(stat_info.st_mtime).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                size_str = "-"
+                mtime_str = "-"
+
             icon = self.get_file_icon(name, is_dir)
             display_name = html.escape(name)
             
@@ -573,13 +695,19 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 type_str = "Fichier"
 
             html_content += f"""
-                                <tr>
-                                    <td><i class="bi {icon} me-2 fs-5"></i><a href="{link}" class="text-decoration-none fw-semibold text-dark">{display_name}</a></td>
+                                <tr class="file-row">
+                                    <td class="file-name"><i class="bi {icon} me-2 fs-5"></i><a href="{link}" class="text-decoration-none fw-semibold text-dark">{display_name}</a></td>
                                     <td><span class="badge bg-light text-dark border">{type_str}</span></td>
+                                    <td class="small text-muted">{size_str}</td>
+                                    <td class="small text-muted">{mtime_str}</td>
                                     <td><span class="small text-muted">{owner}</span></td>
                                     <td class="text-end">"""
 
             if not is_dir:
+                ext = os.path.splitext(name)[1].lower()
+                if ext in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.pdf', '.txt', '.py', '.js', '.css', '.html', '.json', '.md']:
+                    html_content += f'<button onclick="openPreview(\'/preview?file={urllib.parse.quote(rel_path)}\')" class="btn btn-outline-primary btn-sm me-1" title="Aperçu"><i class="bi bi-eye"></i></button>'
+                
                 html_content += f'<a href="/generate-link?file={urllib.parse.quote(rel_path)}" class="btn btn-outline-info btn-sm me-1" title="Créer un lien de partage temporaire"><i class="bi bi-share"></i></a>'
                 html_content += f'<a href="{link}" download class="btn btn-outline-success btn-sm me-1" title="Télécharger"><i class="bi bi-download"></i></a>'
 
@@ -605,6 +733,79 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 </div>
             </div>
         </div>
+
+        <!-- Modal de prévisualisation -->
+        <div class="modal fade" id="previewModal" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-xl modal-dialog-centered">
+                <div class="modal-content bg-dark text-light">
+                    <div class="modal-header border-secondary">
+                        <h5 class="modal-title"><i class="bi bi-eye me-2"></i>Aperçu du fichier</h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body p-0" style="min-height: 500px;">
+                        <iframe id="previewFrame" src="" style="width:100%; height:600px; border:none;"></iframe>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+        <script>
+            // Recherche instantanée
+            document.getElementById('searchInput').addEventListener('keyup', function() {
+                const filter = this.value.toLowerCase();
+                const rows = document.querySelectorAll('#fileTable .file-row');
+                rows.forEach(row => {
+                    const text = row.querySelector('.file-name').textContent.toLowerCase();
+                    row.style.display = text.includes(filter) ? '' : 'none';
+                });
+            });
+
+            // Modal d'aperçu
+            function openPreview(url) {
+                document.getElementById('previewFrame').src = url;
+                const modal = new bootstrap.Modal(document.getElementById('previewModal'));
+                modal.show();
+            }
+
+            // Gestion du Drag & Drop
+            const dragArea = document.getElementById('dragArea');
+            const fileInput = document.getElementById('fileInput');
+
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dragArea.addEventListener(eventName, preventDefaults, false);
+            });
+
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dragArea.addEventListener(eventName, () => dragArea.classList.add('active'), false);
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                dragArea.addEventListener(eventName, () => dragArea.classList.remove('active'), false);
+            });
+
+            dragArea.addEventListener('drop', handleDrop, false);
+
+            function handleDrop(e) {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+                fileInput.files = files;
+                if(files.length > 0) {
+                    dragArea.querySelector('p').textContent = "Fichier sélectionné : " + files[0].name;
+                }
+            }
+
+            fileInput.addEventListener('change', function() {
+                if (this.files.length > 0) {
+                    dragArea.querySelector('p').textContent = "Fichier sélectionné : " + this.files[0].name;
+                }
+            });
+        </script>
         </body>
         </html>"""
 
