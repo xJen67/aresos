@@ -7,15 +7,7 @@ import shutil
 import uuid
 import datetime
 import hashlib
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from http import cookies
-
-# --- CONFIGURATION E-MAIL (SMTP) ---
-# Remplace par ton adresse e-mail et ton mot de passe d'application Gmail
-EMAIL_SENDER = "ton.email@gmail.com"
-EMAIL_APP_PASSWORD = "ton_mot_de_passe_app_16_caracteres"
 
 EXTERNAL_CLOUD_LINK = "https://drive.google.com"
 
@@ -29,37 +21,12 @@ def log_event(message):
     except Exception as e:
         print(f"[!] Erreur d'écriture dans server.log : {e}")
 
-def send_otp_email(receiver_email, otp_code):
-    if not EMAIL_SENDER or "@" not in EMAIL_SENDER:
-        log_event(f"[!] Email non configuré. Code OTP pour {receiver_email} : {otp_code}")
-        return False
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = EMAIL_SENDER
-        msg['To'] = receiver_email
-        msg['Subject'] = "Code de vérification - Aresos Cloud"
-        
-        body = f"Bonjour,\n\nVotre code de vérification pour vous inscrire sur Aresos Cloud est : {otp_code}\n\nCe code est valable 10 minutes."
-        msg.attach(MIMEText(body, 'plain'))
-        
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(EMAIL_SENDER, EMAIL_APP_PASSWORD)
-        server.sendmail(EMAIL_SENDER, receiver_email, msg.as_string())
-        server.quit()
-        log_event(f"[*] E-mail OTP envoyé avec succès à {receiver_email}")
-        return True
-    except Exception as e:
-        log_event(f"[!] Erreur envoi e-mail SMTP : {e}")
-        return False
-
 def load_users():
     filename = "Mot De Passe.txt"
     users_db = {}
     current_user = None
     current_pass = None
     current_role = "user"
-    current_email = ""
     
     if os.path.exists(filename):
         try:
@@ -74,20 +41,17 @@ def load_users():
                     
                     if key == "user":
                         if current_user:
-                            users_db[current_user] = {"password": current_pass, "role": current_role, "email": current_email}
+                            users_db[current_user] = {"password": current_pass, "role": current_role}
                         current_user = val
                         current_pass = None
                         current_role = "user"
-                        current_email = ""
                     elif key == "password":
-                        current_pass = val
+                        current_pass = hashlib.sha256(val.encode('utf-8')).hexdigest()
                     elif key == "role":
                         current_role = val.lower()
-                    elif key == "email":
-                        current_email = val
                 
                 if current_user and current_pass:
-                    users_db[current_user] = {"password": current_pass, "role": current_role, "email": current_email}
+                    users_db[current_user] = {"password": current_pass, "role": current_role}
                         
             log_event(f"[*] Fichier '{filename}' lu avec succès ! Comptes chargés : {list(users_db.keys())}")
         except Exception as e:
@@ -95,7 +59,7 @@ def load_users():
     else:
         log_event(f"[!] Fichier '{filename}' introuvable. Compte de secours 'admin':'admin'")
         default_pass = hashlib.sha256("admin".encode('utf-8')).hexdigest()
-        users_db["admin"] = {"password": default_pass, "role": "admin", "email": "admin@aresos.local"}
+        users_db["admin"] = {"password": default_pass, "role": "admin"}
         
     return users_db
 
@@ -105,9 +69,7 @@ def save_users_to_file():
         with open(filename, "w", encoding="utf-8") as f:
             for uname, data in USERS_DB.items():
                 f.write(f"user: {uname}\n")
-                f.write(f"password: {data['password']}\n")
-                f.write(f"role: {data['role']}\n")
-                f.write(f"email: {data.get('email', '')}\n\n")
+                f.write(f"role: {data['role']}\n\n")
         log_event("[*] Fichier des utilisateurs mis à jour.")
     except Exception as e:
         log_event(f"[!] Erreur sauvegarde utilisateurs : {e}")
@@ -125,9 +87,8 @@ USERS_DB = load_users()
 SESSIONS = {}
 FILE_OWNERS = {}
 TEMP_LINKS = {}
-FRIENDS = {}       # username -> list of friend usernames
-PENDING_REQUESTS = {} # username -> list of usernames (demandes d'amis reçues)
-PENDING_SIGNUPS = {}  # email -> {"username": ..., "password": ..., "otp": ...}
+FRIENDS = {}          # username -> list of friend usernames
+PENDING_REQUESTS = {} # username -> list of usernames (demandes reçues)
 
 UPLOAD_DIR = os.getcwd()
 TRASH_DIR = os.path.join(UPLOAD_DIR, ".corbeille")
@@ -191,19 +152,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         if parsed_url.path == "/login":
             self.send_login_page()
             return
-        if parsed_url.path == "/signup":
-            self.send_signup_page()
-            return
-        if parsed_url.path == "/verify-otp":
-            self.send_otp_page()
-            return
-
-        # Connexions sociales simulées / prêtes
-        if parsed_url.path in ["/auth/google", "/auth/microsoft", "/auth/apple"]:
-            provider = parsed_url.path.split("/")[-1]
-            log_event(f"Tentative de connexion via {provider.capitalize()}")
-            self.send_login_page(error=f"Connexion {provider.capitalize()} non configurée (clés OAuth requises).")
-            return
 
         if parsed_url.path == "/logout":
             logged_in_user = self.check_auth()
@@ -239,7 +187,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             self.send_admin_dashboard(logged_in_user)
             return
 
-        # Gestion des demandes d'amis (Accepter)
+        # Accepter une demande d'ami
         if parsed_url.path.startswith("/accept-friend/"):
             friend_name = parsed_url.path.split("/")[-1]
             if logged_in_user in PENDING_REQUESTS and friend_name in PENDING_REQUESTS[logged_in_user]:
@@ -414,71 +362,259 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_login_page(error="Identifiant ou mot de passe incorrect.")
             return
 
-        # Inscription : Étape 1 (Envoi du code OTP par mail)
-        if parsed_url.path == "/signup-step1":
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
-            params = urllib.parse.parse_qs(body)
-            username = params.get("username", [""])[0].strip()
-            password = params.get("password", [""])[0].strip()
-            email = params.get("email", [""])[0].strip()
-
-            if not username or not password or not email:
-                self.send_signup_page(error="Tous les champs sont requis.")
-                return
-            if username in USERS_DB:
-                self.send_signup_page(error="Ce nom d'utilisateur existe déjà.")
-                return
-
-            otp_code = str(uuid.uuid4())[:6].upper()
-            PENDING_SIGNUPS[email] = {"username": username, "password": password, "otp": otp_code}
-            
-            success = send_otp_email(email, otp_code)
-            if not success and EMAIL_SENDER != "ton.email@gmail.com":
-                self.send_signup_page(error="Échec de l'envoi de l'e-mail.")
-                return
-
-            # Stocker l'email dans un cookie temporaire d'inscription
+        logged_in_user = self.check_auth()
+        if not logged_in_user:
             self.send_response(303)
-            self.send_header('Set-Cookie', f'reg_email={email}; Path=/')
-            self.send_header('Location', '/verify-otp')
+            self.send_header('Location', '/login')
             self.end_headers()
             return
 
-        # Inscription : Étape 2 (Vérification du code OTP)
-        if parsed_url.path == "/signup-step2":
+        user_role = USERS_DB.get(logged_in_user, {}).get("role", "user")
+
+        # Envoyer une demande d'ami (Style Snapchat)
+        if parsed_url.path == "/add-friend":
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length).decode('utf-8')
             params = urllib.parse.parse_qs(body)
-            entered_otp = params.get("otp", [""])[0].strip().upper()
+            friend_target = params.get("friend_name", [""])[0].strip()
 
-            cookie_header = self.headers.get('Cookie')
-            reg_email = None
-            if cookie_header:
-                c = cookies.SimpleCookie(cookie_header)
-                if 'reg_email' in c:
-                    reg_email = c['reg_email'].value
-
-            if reg_email and reg_email in PENDING_SIGNUPS:
-                data = PENDING_SIGNUPS[reg_email]
-                if data["otp"] == entered_otp:
-                    hashed_pass = hashlib.sha256(data["password"].encode('utf-8')).hexdigest()
-                    USERS_DB[data["username"]] = {"password": hashed_pass, "role": "user", "email": reg_email}
-                    os.makedirs(os.path.join(UPLOAD_DIR, data["username"]), exist_ok=True)
-                    FRIENDS[data["username"]] = []
-                    PENDING_REQUESTS[data["username"]] = []
-                    save_users_to_file()
-                    
-                    PENDING_SIGNUPS.pop(reg_email, None)
-                    log_event(f"Nouveau compte vérifié et créé : {data['username']}")
-                    
-                    self.send_response(303)
-                    self.send_header('Set-Cookie', 'reg_email=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT')
-                    self.send_header('Location', '/login')
-                    self.end_headers()
-                    return
+            if friend_target in USERS_DB and friend_target != logged_in_user:
+                if friend_target not in PENDING_REQUESTS[logged_in_user] and logged_in_user not in FRIENDS[friend_target]:
+                    PENDING_REQUESTS[friend_target].append(logged_in_user)
+                    log_event(f"Demande d'ami envoyée de {logged_in_user} à {friend_target}")
             
-            self.send_otp_page(error="Code de vérification incorrect.")
+            self.send_response(303)
+            self.send_header('Location', '/')
+            self.end_headers()
+            return
+
+        if parsed_url.path == "/create-folder":
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            params = urllib.parse.parse_qs(body)
+            folder_name = params.get("folder_name", [""])[0].strip()
+            current_folder = params.get("current_folder", [""])[0].strip()
+
+            if folder_name:
+                safe_name = "".join(c for c in folder_name if c.isalnum() or c in (' ', '_', '-')).strip()
+                target_path = os.path.normpath(os.path.join(UPLOAD_DIR, current_folder, safe_name))
+                if target_path.startswith(UPLOAD_DIR):
+                    os.makedirs(target_path, exist_ok=True)
+            self.send_response(303)
+            self.send_header('Location', f'/{current_folder}')
+            self.end_headers()
+            return
+
+        if parsed_url.path == "/save-file":
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            params = urllib.parse.parse_qs(body)
+            rel_file = params.get("file", [""])[0].strip()
+            file_content = params.get("content", [""])[0]
+
+            if rel_file:
+                target_path = os.path.normpath(os.path.join(UPLOAD_DIR, rel_file))
+                if target_path.startswith(UPLOAD_DIR) and os.path.isfile(target_path):
+                    with open(target_path, "w", encoding="utf-8") as f:
+                        f.write(file_content)
+            self.send_response(303)
+            self.send_header('Location', '/')
+            self.end_headers()
+            return
+
+        if parsed_url.path == "/create-note":
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            params = urllib.parse.parse_qs(body)
+            note_name = params.get("note_name", [""])[0].strip()
+            target_folder = params.get("target_folder", [logged_in_user])[0].strip()
+
+            if note_name:
+                if not note_name.endswith('.txt'):
+                    note_name += '.txt'
+                safe_name = "".join(c for c in note_name if c.isalnum() or c in (' ', '_', '-', '.')).strip()
+                dest_dir = os.path.join(UPLOAD_DIR, target_folder)
+                os.makedirs(dest_dir, exist_ok=True)
+                filepath = os.path.join(dest_dir, safe_name)
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write("Nouvelle note...")
+                rel_path = os.path.relpath(filepath, UPLOAD_DIR).replace('\\', '/')
+                FILE_OWNERS[rel_path] = logged_in_user
+            self.send_response(303)
+            self.send_header('Location', '/')
+            self.end_headers()
+            return
+
+        if parsed_url.path == "/admin-action" and user_role == "admin":
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(contentVoici le script final et mis à jour (`server_secure.py`). 
+
+Le système d'inscription par e-mail et de code OTP a été entièrement retiré pour revenir à un mode de connexion simple et direct (avec la base d'utilisateurs classique lue depuis `Mot De Passe.txt`), tout en **conservant précieusement** :
+1. **La cloche de notification dynamique** dans la barre de navigation.
+2. **Le système d'amis type Snapchat** (pour envoyer des demandes d'amis et partager ses dossiers personnels avec eux).
+
+```python
+import http.server
+import os
+import urllib.parse
+import html
+import shutil
+import uuid
+import datetime
+import hashlib
+from http import cookies
+
+EXTERNAL_CLOUD_LINK = "[https://drive.google.com](https://drive.google.com)"
+
+def log_event(message):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f"[{timestamp}] {message}\n"
+    print(log_line.strip())
+    try:
+        with open("server.log", "a", encoding="utf-8") as log_file:
+            log_file.write(log_line)
+    except Exception as e:
+        print(f"[!] Erreur d'écriture dans server.log : {e}")
+
+def load_users():
+    filename = "Mot De Passe.txt"
+    users_db = {}
+    current_user = None
+    current_pass = None
+    current_role = "user"
+    
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r", encoding="utf-8-sig") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or ":" not in line:
+                        continue
+                    parts = line.split(":", 1)
+                    key = parts[0].strip().lower()
+                    val = parts[1].strip()
+                    
+                    if key == "user":
+                        if current_user:
+                            users_db[current_user] = {"password": current_pass, "role": current_role}
+                        current_user = val
+                        current_pass = None
+                        current_role = "user"
+                    elif key == "password":
+                        current_pass = hashlib.sha256(val.encode('utf-8')).hexdigest()
+                    elif key == "role":
+                        current_role = val.lower()
+                
+                if current_user and current_pass:
+                    users_db[current_user] = {"password": current_pass, "role": current_role}
+                        
+            log_event(f"[*] Fichier '{filename}' lu avec succès ! Comptes chargés : {list(users_db.keys())}")
+        except Exception as e:
+            log_event(f"[!] Erreur lors de la lecture du fichier : {e}")
+    else:
+        log_event(f"[!] Fichier '{filename}' introuvable. Compte de secours 'admin':'admin'")
+        default_pass = hashlib.sha256("admin".encode('utf-8')).hexdigest()
+        users_db["admin"] = {"password": default_pass, "role": "admin"}
+        
+    return users_db
+
+def save_users_to_file():
+    filename = "Mot De Passe.txt"
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            for uname, data in USERS_DB.items():
+                f.write(f"user: {uname}\n")
+                f.write(f"role: {data['role']}\n\n")
+        log_event("[*] Fichier des utilisateurs mis à jour.")
+    except Exception as e:
+        log_event(f"[!] Erreur sauvegarde utilisateurs : {e}")
+
+USERS_DB = load_users()
+SESSIONS = {}
+FILE_OWNERS = {}
+TEMP_LINKS = {}
+FRIENDS = {}          # username -> list of friend usernames
+PENDING_REQUESTS = {} # username -> list of usernames (demandes reçues)
+
+UPLOAD_DIR = os.getcwd()
+TRASH_DIR = os.path.join(UPLOAD_DIR, ".corbeille")
+os.makedirs(TRASH_DIR, exist_ok=True)
+
+COMMUN_DIR = os.path.join(UPLOAD_DIR, "Fichier commun")
+os.makedirs(COMMUN_DIR, exist_ok=True)
+
+for username in USERS_DB.keys():
+    user_folder = os.path.join(UPLOAD_DIR, username)
+    os.makedirs(user_folder, exist_ok=True)
+    if username not in FRIENDS:
+        FRIENDS[username] = []
+    if username not in PENDING_REQUESTS:
+        PENDING_REQUESTS[username] = []
+
+class SecureHandler(http.server.SimpleHTTPRequestHandler):
+    def check_auth(self):
+        cookie_header = self.headers.get('Cookie')
+        if cookie_header:
+            try:
+                c = cookies.SimpleCookie(cookie_header)
+                if 'session_id' in c:
+                    session_id = c['session_id'].value
+                    if session_id in SESSIONS:
+                        return SESSIONS[session_id]
+            except Exception:
+                pass
+        return None
+
+    def translate_path(self, path):
+        path = super().translate_path(path)
+        relpath = os.path.relpath(path, os.getcwd())
+        return os.path.join(UPLOAD_DIR, relpath)
+
+    def get_file_icon(self, filename, is_dir):
+        if is_dir:
+            return "bi-folder-fill text-warning"
+        ext = os.path.splitext(filename)[1].lower()
+        if ext == '.url':
+            return "bi-link-45deg text-success"
+        elif ext in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp']:
+            return "bi-file-earmark-image-fill text-primary"
+        elif ext in ['.pdf']:
+            return "bi-file-earmark-pdf-fill text-danger"
+        elif ext in ['.zip', '.rar', '.7z', '.tar', '.gz']:
+            return "bi-file-earmark-zip-fill text-secondary"
+        elif ext in ['.mp4', '.avi', '.mkv', '.mov']:
+            return "bi-file-earmark-play-fill text-info"
+        elif ext in ['.mp3', '.wav', '.ogg']:
+            return "bi-file-earmark-music-fill text-info"
+        elif ext in ['.py', '.bat', '.sh', '.js', '.html', '.css', '.json']:
+            return "bi-file-earmark-code-fill text-dark"
+        elif ext in ['.txt', '.md', '.doc', '.docx']:
+            return "bi-file-earmark-text-fill text-secondary"
+        return "bi-file-earmark-fill text-muted"
+
+    def do_GET(self):
+        parsed_url = urllib.parse.urlparse(self.path)
+        
+        if parsed_url.path == "/login":
+            self.send_login_page()
+            return
+
+        if parsed_url.path == "/logout":
+            logged_in_user = self.check_auth()
+            if logged_in_user:
+                log_event(f"Déconnexion : {logged_in_user}")
+            cookie_header = self.headers.get('Cookie')
+            if cookie_header:
+                try:
+                    c = cookies.SimpleCookie(cookie_header)
+                    if 'session_id' in c:
+                        SESSIONS.pop(c['session_id'].value, None)
+                except Exception:
+                    pass
+            self.send_response(303)
+            self.send_header('Set-Cookie', 'session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT')
+            self.send_header('Location', '/login')
+            self.end_headers()
             return
 
         logged_in_user = self.check_auth()
@@ -490,7 +626,198 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
 
         user_role = USERS_DB.get(logged_in_user, {}).get("role", "user")
 
-        # Envoyer une demande d'ami (Style Snapchat)
+        if parsed_url.path == "/admin":
+            if user_role != "admin":
+                self.send_forbidden("Accès réservé à l'administrateur.")
+                return
+            self.send_admin_dashboard(logged_in_user)
+            return
+
+        # Accepter une demande d'ami
+        if parsed_url.path.startswith("/accept-friend/"):
+            friend_name = parsed_url.path.split("/")[-1]
+            if logged_in_user in PENDING_REQUESTS and friend_name in PENDING_REQUESTS[logged_in_user]:
+                PENDING_REQUESTS[logged_in_user].remove(friend_name)
+                if logged_in_user not in FRIENDS[friend_name]:
+                    FRIENDS[friend_name].append(logged_in_user)
+                if friend_name not in FRIENDS[logged_in_user]:
+                    FRIENDS[logged_in_user].append(friend_name)
+                log_event(f"Ami accepté : {friend_name} et {logged_in_user}")
+            self.send_response(303)
+            self.send_header('Location', '/')
+            self.end_headers()
+            return
+
+        if parsed_url.path == "/download-zip":
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+            if "dir" in query_params:
+                rel_dir = query_params["dir"][0]
+                target_dir = os.path.normpath(os.path.join(UPLOAD_DIR, rel_dir))
+                if target_dir.startswith(UPLOAD_DIR) and os.path.isdir(target_dir):
+                    first_folder = rel_dir.split('/')[0] if '/' in rel_dir else rel_dir
+                    if user_role == "admin" or first_folder.lower() == "fichier commun" or first_folder == logged_in_user or first_folder in FRIENDS.get(logged_in_user, []):
+                        zip_filename = f"{os.path.basename(target_dir) or 'cloud'}.zip"
+                        zip_path = shutil.make_archive(os.path.join(UPLOAD_DIR, "temp_archive"), 'zip', target_dir)
+                        self.send_response(200)
+                        self.send_header("Content-type", "application/zip")
+                        self.send_header("Content-Disposition", f'attachment; filename="{zip_filename}"')
+                        self.end_headers()
+                        with open(zip_path, 'rb') as zf:
+                            shutil.copyfileobj(zf, self.wfile)
+                        os.remove(zip_path)
+                        return
+            self.send_forbidden("Accès refusé.")
+            return
+
+        if parsed_url.path == "/preview" or parsed_url.path == "/edit":
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+            if "file" in query_params:
+                rel_file = query_params["file"][0]
+                target_path = os.path.normpath(os.path.join(UPLOAD_DIR, rel_file))
+                if target_path.startswith(UPLOAD_DIR) and os.path.isfile(target_path):
+                    first_folder = rel_file.split('/')[0] if '/' in rel_file else rel_file
+                    if user_role == "admin" or first_folder.lower() == "fichier commun" or first_folder == logged_in_user or first_folder in FRIENDS.get(logged_in_user, []):
+                        ext = os.path.splitext(target_path)[1].lower()
+                        filename = os.path.basename(target_path)
+                        
+                        if parsed_url.path == "/edit" and ext in ['.txt', '.py', '.js', '.css', '.html', '.json', '.md']:
+                            with open(target_path, "r", encoding="utf-8", errors="ignore") as f:
+                                content = f.read()
+                            self.send_edit_page(rel_file, filename, content)
+                            return
+
+                        if ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg']:
+                            mime = "image/png" if ext == '.png' else "image/jpeg"
+                            self.send_response(200)
+                            self.send_header("Content-type", mime)
+                            self.end_headers()
+                            with open(target_path, "rb") as f:
+                                shutil.copyfileobj(f, self.wfile)
+                            return
+                        elif ext == '.pdf':
+                            self.send_response(200)
+                            self.send_header("Content-type", "application/pdf")
+                            self.end_headers()
+                            with open(target_path, "rb") as f:
+                                shutil.copyfileobj(f, self.wfile)
+                            return
+                        elif ext in ['.txt', '.py', '.js', '.css', '.html', '.json', '.md']:
+                            with open(target_path, "r", encoding="utf-8", errors="ignore") as f:
+                                text_content = html.escape(f.read())
+                            self.send_response(200)
+                            self.send_header("Content-type", "text/html; charset=utf-8")
+                            self.end_headers()
+                            self.wfile.write(f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
+                            <link href="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css)" rel="stylesheet">
+                            <title>Aperçu - {filename}</title></head><body class="bg-dark text-light p-4">
+                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                <h4 class="fw-bold m-0">{filename}</h4>
+                                <a href="/edit?file={urllib.parse.quote(rel_file)}" class="btn btn-warning btn-sm"><i class="bi bi-pencil-square me-1"></i> Modifier</a>
+                            </div>
+                            <pre class="bg-secondary p-3 rounded text-light" style="white-space: pre-wrap;"><code>{text_content}</code></pre>
+                            </body></html>""".encode('utf-8'))
+                            return
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"Fichier non trouve.")
+            return
+
+        if parsed_url.path.startswith("/temp-download/"):
+            token = parsed_url.path.split("/")[-1]
+            if token in TEMP_LINKS:
+                link_info = TEMP_LINKS[token]
+                if datetime.datetime.now() < link_info["expires"]:
+                    filepath = link_info["filepath"]
+                    if os.path.exists(filepath):
+                        self.send_file_content(filepath)
+                        return
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"Lien expire.")
+            return
+
+        if parsed_url.path == "/generate-link":
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+            if "file" in query_params:
+                rel_file = query_params["file"][0]
+                target_path = os.path.normpath(os.path.join(UPLOAD_DIR, rel_file))
+                if target_path.startswith(UPLOAD_DIR):
+                    if os.path.exists(target_path) and os.path.isfile(target_path):
+                        token = str(uuid.uuid4())
+                        expires = datetime.datetime.now() + datetime.timedelta(hours=24)
+                        TEMP_LINKS[token] = {"filepath": target_path, "expires": expires}
+                        host = self.headers.get('Host', 'localhost:8000')
+                        temp_url = f"https://{host}/temp-download/{token}" if 'onrender.com' in host else f"http://{host}/temp-download/{token}"
+                        
+                        self.send_response(200)
+                        self.send_header("Content-type", "text/html; charset=utf-8")
+                        self.end_headers()
+                        self.wfile.write(f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
+                        <link href="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css)" rel="stylesheet">
+                        <title>Lien Temporaire</title></head>
+                        <body class="bg-light d-flex align-items-center justify-content-center vh-100">
+                        <div class="card shadow p-4 text-center" style="max-width: 500px;">
+                            <h4 class="fw-bold">Lien temporaire (24h)</h4>
+                            <input type="text" class="form-control font-monospace small mb-3" value="{temp_url}" readonly>
+                            <a href="/" class="btn btn-secondary">Retour</a>
+                        </div></body></html>""".encode('utf-8'))
+                        return
+            self.send_response(400)
+            self.end_headers()
+            return
+
+        if parsed_url.path == "/delete":
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+            if "file" in query_params:
+                rel_file = query_params["file"][0]
+                target_path = os.path.normpath(os.path.join(UPLOAD_DIR, rel_file))
+                if target_path.startswith(UPLOAD_DIR):
+                    if os.path.exists(target_path):
+                        try:
+                            trash_dest = os.path.join(TRASH_DIR, f"{uuid.uuid4()}_{os.path.basename(target_path)}")
+                            shutil.move(target_path, trash_dest)
+                            FILE_OWNERS.pop(rel_file, None)
+                        except Exception:
+                            pass
+            self.send_response(303)
+            self.send_header('Location', '/')
+            self.end_headers()
+            return
+
+        super().do_GET()
+
+    def do_POST(self):
+        parsed_url = urllib.parse.urlparse(self.path)
+        
+        if parsed_url.path == "/login":
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            params = urllib.parse.parse_qs(body)
+            username = params.get("username", [""])[0].strip()
+            password = params.get("password", [""])[0].strip()
+            hashed_password = hashlib.sha256(password.encode('utf-8')).hexdigest()
+            
+            if username in USERS_DB and USERS_DB[username]["password"] == hashed_password:
+                session_id = str(uuid.uuid4())
+                SESSIONS[session_id] = username
+                self.send_response(303)
+                self.send_header('Set-Cookie', f'session_id={session_id}; Path=/')
+                self.send_header('Location', '/')
+                self.end_headers()
+            else:
+                self.send_login_page(error="Identifiant ou mot de passe incorrect.")
+            return
+
+        logged_in_user = self.check_auth()
+        if not logged_in_user:
+            self.send_response(303)
+            self.send_header('Location', '/login')
+            self.end_headers()
+            return
+
+        user_role = USERS_DB.get(logged_in_user, {}).get("role", "user")
+
+        # Envoyer une demande d'ami
         if parsed_url.path == "/add-friend":
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length).decode('utf-8')
@@ -591,7 +918,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
 
-        # Upload de fichier (Vérification des amis si envoi dans un dossier personnel tiers)
+        # Upload de fichier
         content_type = self.headers.get('Content-Type', '')
         if 'multipart/form-data' not in content_type:
             self.send_response(400)
@@ -612,7 +939,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     val_data = val_data.rstrip(b'\r\n--')
                     folder_val = val_data.decode('utf-8').strip()
                     if folder_val:
-                        # Si l'utilisateur envoie dans un autre dossier perso, il faut être ami (sauf admin ou fichier commun)
                         if user_role == "admin" or folder_val.lower() == "fichier commun" or folder_val == logged_in_user or folder_val in FRIENDS.get(logged_in_user, []):
                             target_subfolder = folder_val
 
@@ -654,7 +980,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link href="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css)" rel="stylesheet">
         <title>Accès Interdit</title></head>
         <body class="bg-light d-flex align-items-center justify-content-center vh-100">
         <div class="card shadow p-4 text-center" style="max-width: 450px;">
@@ -663,73 +989,12 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             <a href="/" class="btn btn-outline-primary mt-2">Retour</a>
         </div></body></html>""".encode('utf-8'))
 
-    def send_signup_page(self, error=""):
-        html = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Inscription - Aresos Cloud</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet"></head>
-        <body class="bg-dark d-flex align-items-center justify-content-center vh-100">
-            <div class="card shadow-lg p-4 bg-secondary text-light" style="width: 100%; max-width: 400px; border-radius: 12px;">
-                <div class="text-center mb-4">
-                    <i class="bi bi-person-plus-fill text-warning display-4"></i>
-                    <h3 class="fw-bold mt-2">Inscription Aresos</h3>
-                </div>
-                {f'<div class="alert alert-danger py-2 small text-center">{error}</div>' if error else ''}
-                <form action="/signup-step1" method="POST">
-                    <div class="mb-3">
-                        <label class="form-label small fw-semibold">Adresse E-mail</label>
-                        <input type="email" name="email" class="form-control" required autocomplete="email">
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label small fw-semibold">Nom d'utilisateur</label>
-                        <input type="text" name="username" class="form-control" required autocomplete="username">
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label small fw-semibold">Mot de passe</label>
-                        <input type="password" name="password" class="form-control" required autocomplete="new-password">
-                    </div>
-                    <button type="submit" class="btn btn-warning w-100 fw-bold py-2 shadow-sm mt-2">Recevoir le code de vérification</button>
-                </form>
-                <div class="text-center mt-3"><a href="/login" class="text-light small text-decoration-none">Déjà un compte ? Se connecter</a></div>
-            </div>
-        </body></html>"""
-        self.send_response(200)
-        self.send_header("Content-type", "text/html; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(html.encode("utf-8"))
-
-    def send_otp_page(self, error=""):
-        html = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Vérification OTP - Aresos Cloud</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"></head>
-        <body class="bg-dark d-flex align-items-center justify-content-center vh-100">
-            <div class="card shadow-lg p-4 bg-secondary text-light" style="width: 100%; max-width: 400px; border-radius: 12px;">
-                <div class="text-center mb-4">
-                    <h3 class="fw-bold">Vérification par e-mail</h3>
-                    <p class="small text-light">Entrez le code à 6 caractères envoyé à votre adresse e-mail.</p>
-                </div>
-                {f'<div class="alert alert-danger py-2 small text-center">{error}</div>' if error else ''}
-                <form action="/signup-step2" method="POST">
-                    <div class="mb-3">
-                        <input type="text" name="otp" class="form-control text-center font-monospace fs-4" placeholder="XXXXXX" required autofocus>
-                    </div>
-                    <button type="submit" class="btn btn-warning w-100 fw-bold py-2">Valider le compte</button>
-                </form>
-            </div>
-        </body></html>"""
-        self.send_response(200)
-        self.send_header("Content-type", "text/html; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(html.encode("utf-8"))
-
     def send_login_page(self, error=""):
         html = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>Connexion - Aresos Cloud</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet"></head>
+        <link href="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css)" rel="stylesheet">
+        <link href="[https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css](https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css)" rel="stylesheet"></head>
         <body class="bg-dark d-flex align-items-center justify-content-center vh-100">
             <div class="card shadow-lg p-4 bg-secondary text-light" style="width: 100%; max-width: 400px; border-radius: 12px;">
                 <div class="text-center mb-4">
@@ -744,19 +1009,10 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     </div>
                     <div class="mb-3">
                         <label class="form-label small fw-semibold">Mot de passe</label>
-                        <input type="password" name="password" id="passwordInput" class="form-control" required autocomplete="current-password">
+                        <input type="password" name="password" class="form-control" required autocomplete="current-password">
                     </div>
-                    <button type="submit" class="btn btn-warning w-100 fw-bold py-2 shadow-sm mb-3">Se connecter</button>
+                    <button type="submit" class="btn btn-warning w-100 fw-bold py-2 shadow-sm">Se connecter</button>
                 </form>
-                
-                <!-- Boutons de Connexion Sociale (Google, Microsoft, Apple) -->
-                <div class="d-grid gap-2 mb-3">
-                    <a href="/auth/google" class="btn btn-light btn-sm text-dark fw-semibold"><i class="bi bi-google me-2 text-danger"></i>Continuer avec Google</a>
-                    <a href="/auth/microsoft" class="btn btn-light btn-sm text-dark fw-semibold"><i class="bi bi-microsoft me-2 text-primary"></i>Continuer avec Microsoft</a>
-                    <a href="/auth/apple" class="btn btn-light btn-sm text-dark fw-semibold"><i class="bi bi-apple me-2 text-dark"></i>Continuer avec Apple</a>
-                </div>
-
-                <div class="text-center"><a href="/signup" class="text-light small text-decoration-none">Créer un compte par e-mail</a></div>
             </div>
         </body></html>"""
         self.send_response(200)
@@ -766,7 +1022,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
 
     def send_edit_page(self, rel_file, filename, content):
         html_content = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link href="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css)" rel="stylesheet">
         <title>Éditer - {filename}</title></head>
         <body class="bg-dark text-light p-4">
         <div class="container" style="max-width: 800px;">
@@ -797,7 +1053,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 pass
 
         html_content = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link href="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css)" rel="stylesheet">
         <title>Administration</title></head>
         <body class="bg-light">
         <nav class="navbar navbar-dark bg-dark shadow-sm mb-4">
@@ -814,7 +1070,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                             <h4 class="card-title fw-bold mb-3">Utilisateurs</h4>
                             <ul class="list-group mb-3">"""
         for u, data in USERS_DB.items():
-            html_content += f'<li class="list-group-item d-flex justify-content-between align-items-center"><span><b>{u}</b> ({data.get("email","N/A")})</span>'
+            html_content += f'<li class="list-group-item d-flex justify-content-between align-items-center"><span><b>{u}</b> ({data.get("role","user")})</span>'
             if u != "admin":
                 html_content += f'<form action="/admin-action" method="POST" class="m-0"><input type="hidden" name="action" value="delete_user"><input type="hidden" name="del_username" value="{u}"><button type="submit" class="btn btn-outline-danger btn-sm">Supprimer</button></form>'
             html_content += '</li>'
@@ -857,13 +1113,11 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         if rel_current == ".":
             rel_current = ""
 
-        # Filtrage selon les droits et la liste d'amis
         if user_role != "admin":
             if rel_current == "":
                 list_dir = ["Fichier commun"]
                 if os.path.exists(os.path.join(UPLOAD_DIR, logged_in_user)):
                     list_dir.append(logged_in_user)
-                # Ajouter les dossiers des amis
                 for friend in FRIENDS.get(logged_in_user, []):
                     if os.path.exists(os.path.join(UPLOAD_DIR, friend)):
                         list_dir.append(friend)
@@ -881,15 +1135,14 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         list_dir.sort(key=lambda a: (not os.path.isdir(os.path.join(path, a)), a.lower()))
         displaypath = html.escape(urllib.parse.unquote(self.path))
 
-        # Récupération des notifications (Demandes d'amis en attente)
         my_notifications = PENDING_REQUESTS.get(logged_in_user, [])
         notif_count = len(my_notifications)
 
         html_content = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>Aresos Cloud</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
+        <link href="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css)" rel="stylesheet">
+        <link href="[https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css](https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css)" rel="stylesheet">
         <style>
             .drag-area {{ border: 2px dashed #0d6efd; border-radius: 8px; padding: 20px; text-align: center; background-color: #f8f9fa; cursor: pointer; }}
             .drag-area.active {{ background-color: #e2e6ea; }}
@@ -900,7 +1153,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     <a class="navbar-brand font-monospace fw-bold" href="/"><i class="bi bi-cloud-arrow-down-fill text-warning me-2"></i>Aresos Cloud</a>
                     <div class="d-flex align-items-center gap-3">
                         
-                        <!-- CLOCHE DE NOTIFICATIONS (Type Snapchat / Centre de notifs) -->
+                        <!-- CLOCHE DE NOTIFICATIONS -->
                         <div class="dropdown">
                             <button class="btn btn-dark position-relative dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
                                 <i class="bi bi-bell-fill fs-5 text-warning"></i>
@@ -932,7 +1185,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             </nav>
             <div class="container pb-5">
                 
-                <!-- Panneau d'actions et ajout d'amis (Style Snapchat) -->
+                <!-- Panneau d'actions et ajout d'amis -->
                 <div class="card shadow-sm mb-4">
                     <div class="card-body">
                         <ul class="nav nav-tabs mb-3" id="uploadTab" role="tablist">
@@ -947,7 +1200,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                             <div class="tab-pane fade show active" id="file-panel" role="tabpanel">
                                 <form action="" method="POST" enctype="multipart/form-data" class="row g-3">
                                     <div class="col-md-4">
-                                        <label class="form-label small fw-semibold">Destinataire (Vous / Fichier commun / Amis)</label>
+                                        <label class="form-label small fw-semibold">Destinataire</label>
                                         <select name="target_folder" class="form-select form-select-sm">
                                             <option value="Fichier commun">Fichier commun</option>
                                             <option value="{logged_in_user}">{logged_in_user} (Moi)</option>"""
@@ -963,11 +1216,11 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                                 </form>
                             </div>
 
-                            <!-- Ajouter un ami (Style Snapchat) -->
+                            <!-- Ajouter un ami -->
                             <div class="tab-pane fade" id="friend-panel" role="tabpanel">
                                 <form action="/add-friend" method="POST" class="row g-3">
                                     <div class="col-md-8">
-                                        <label class="form-label small fw-semibold">Nom d'utilisateur de l'ami à ajouter</label>
+                                        <label class="form-label small fw-semibold">Nom d'utilisateur de l'ami</label>
                                         <input type="text" name="friend_name" class="form-control form-control-sm" placeholder="Ex: Hugo" required>
                                     </div>
                                     <div class="col-md-4 d-flex align-items-end">
@@ -1048,7 +1301,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     </div>
                 </div>
             </div>
-            <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+            <script src="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js)"></script>
         </body></html>"""
 
         response_bytes = html_content.encode('utf-8')
