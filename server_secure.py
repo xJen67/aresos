@@ -1,6 +1,5 @@
 import http.server
 import os
-import io
 import urllib.parse
 import html
 import shutil
@@ -73,15 +72,6 @@ def save_users_to_file():
         log_event("[*] Fichier des utilisateurs mis à jour.")
     except Exception as e:
         log_event(f"[!] Erreur sauvegarde utilisateurs : {e}")
-
-def format_size(size_bytes):
-    if size_bytes == 0:
-        return "-"
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size_bytes < 1024.0:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.1f} TB"
 
 USERS_DB = load_users()
 SESSIONS = {}
@@ -371,452 +361,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
 
         user_role = USERS_DB.get(logged_in_user, {}).get("role", "user")
 
-        # Envoyer une demande d'ami (Style Snapchat)
-        if parsed_url.path == "/add-friend":
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
-            params = urllib.parse.parse_qs(body)
-            friend_target = params.get("friend_name", [""])[0].strip()
-
-            if friend_target in USERS_DB and friend_target != logged_in_user:
-                if friend_target not in PENDING_REQUESTS[logged_in_user] and logged_in_user not in FRIENDS[friend_target]:
-                    PENDING_REQUESTS[friend_target].append(logged_in_user)
-                    log_event(f"Demande d'ami envoyée de {logged_in_user} à {friend_target}")
-            
-            self.send_response(303)
-            self.send_header('Location', '/')
-            self.end_headers()
-            return
-
-        if parsed_url.path == "/create-folder":
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
-            params = urllib.parse.parse_qs(body)
-            folder_name = params.get("folder_name", [""])[0].strip()
-            current_folder = params.get("current_folder", [""])[0].strip()
-
-            if folder_name:
-                safe_name = "".join(c for c in folder_name if c.isalnum() or c in (' ', '_', '-')).strip()
-                target_path = os.path.normpath(os.path.join(UPLOAD_DIR, current_folder, safe_name))
-                if target_path.startswith(UPLOAD_DIR):
-                    os.makedirs(target_path, exist_ok=True)
-            self.send_response(303)
-            self.send_header('Location', f'/{current_folder}')
-            self.end_headers()
-            return
-
-        if parsed_url.path == "/save-file":
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
-            params = urllib.parse.parse_qs(body)
-            rel_file = params.get("file", [""])[0].strip()
-            file_content = params.get("content", [""])[0]
-
-            if rel_file:
-                target_path = os.path.normpath(os.path.join(UPLOAD_DIR, rel_file))
-                if target_path.startswith(UPLOAD_DIR) and os.path.isfile(target_path):
-                    with open(target_path, "w", encoding="utf-8") as f:
-                        f.write(file_content)
-            self.send_response(303)
-            self.send_header('Location', '/')
-            self.end_headers()
-            return
-
-        if parsed_url.path == "/create-note":
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
-            params = urllib.parse.parse_qs(body)
-            note_name = params.get("note_name", [""])[0].strip()
-            target_folder = params.get("target_folder", [logged_in_user])[0].strip()
-
-            if note_name:
-                if not note_name.endswith('.txt'):
-                    note_name += '.txt'
-                safe_name = "".join(c for c in note_name if c.isalnum() or c in (' ', '_', '-', '.')).strip()
-                dest_dir = os.path.join(UPLOAD_DIR, target_folder)
-                os.makedirs(dest_dir, exist_ok=True)
-                filepath = os.path.join(dest_dir, safe_name)
-                with open(filepath, "w", encoding="utf-8") as f:
-                    f.write("Nouvelle note...")
-                rel_path = os.path.relpath(filepath, UPLOAD_DIR).replace('\\', '/')
-                FILE_OWNERS[rel_path] = logged_in_user
-            self.send_response(303)
-            self.send_header('Location', '/')
-            self.end_headers()
-            return
-
-        if parsed_url.path == "/admin-action" and user_role == "admin":
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(contentVoici le script final et mis à jour (`server_secure.py`). 
-
-Le système d'inscription par e-mail et de code OTP a été entièrement retiré pour revenir à un mode de connexion simple et direct (avec la base d'utilisateurs classique lue depuis `Mot De Passe.txt`), tout en **conservant précieusement** :
-1. **La cloche de notification dynamique** dans la barre de navigation.
-2. **Le système d'amis type Snapchat** (pour envoyer des demandes d'amis et partager ses dossiers personnels avec eux).
-
-```python
-import http.server
-import os
-import urllib.parse
-import html
-import shutil
-import uuid
-import datetime
-import hashlib
-from http import cookies
-
-EXTERNAL_CLOUD_LINK = "[https://drive.google.com](https://drive.google.com)"
-
-def log_event(message):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_line = f"[{timestamp}] {message}\n"
-    print(log_line.strip())
-    try:
-        with open("server.log", "a", encoding="utf-8") as log_file:
-            log_file.write(log_line)
-    except Exception as e:
-        print(f"[!] Erreur d'écriture dans server.log : {e}")
-
-def load_users():
-    filename = "Mot De Passe.txt"
-    users_db = {}
-    current_user = None
-    current_pass = None
-    current_role = "user"
-    
-    if os.path.exists(filename):
-        try:
-            with open(filename, "r", encoding="utf-8-sig") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or ":" not in line:
-                        continue
-                    parts = line.split(":", 1)
-                    key = parts[0].strip().lower()
-                    val = parts[1].strip()
-                    
-                    if key == "user":
-                        if current_user:
-                            users_db[current_user] = {"password": current_pass, "role": current_role}
-                        current_user = val
-                        current_pass = None
-                        current_role = "user"
-                    elif key == "password":
-                        current_pass = hashlib.sha256(val.encode('utf-8')).hexdigest()
-                    elif key == "role":
-                        current_role = val.lower()
-                
-                if current_user and current_pass:
-                    users_db[current_user] = {"password": current_pass, "role": current_role}
-                        
-            log_event(f"[*] Fichier '{filename}' lu avec succès ! Comptes chargés : {list(users_db.keys())}")
-        except Exception as e:
-            log_event(f"[!] Erreur lors de la lecture du fichier : {e}")
-    else:
-        log_event(f"[!] Fichier '{filename}' introuvable. Compte de secours 'admin':'admin'")
-        default_pass = hashlib.sha256("admin".encode('utf-8')).hexdigest()
-        users_db["admin"] = {"password": default_pass, "role": "admin"}
-        
-    return users_db
-
-def save_users_to_file():
-    filename = "Mot De Passe.txt"
-    try:
-        with open(filename, "w", encoding="utf-8") as f:
-            for uname, data in USERS_DB.items():
-                f.write(f"user: {uname}\n")
-                f.write(f"role: {data['role']}\n\n")
-        log_event("[*] Fichier des utilisateurs mis à jour.")
-    except Exception as e:
-        log_event(f"[!] Erreur sauvegarde utilisateurs : {e}")
-
-USERS_DB = load_users()
-SESSIONS = {}
-FILE_OWNERS = {}
-TEMP_LINKS = {}
-FRIENDS = {}          # username -> list of friend usernames
-PENDING_REQUESTS = {} # username -> list of usernames (demandes reçues)
-
-UPLOAD_DIR = os.getcwd()
-TRASH_DIR = os.path.join(UPLOAD_DIR, ".corbeille")
-os.makedirs(TRASH_DIR, exist_ok=True)
-
-COMMUN_DIR = os.path.join(UPLOAD_DIR, "Fichier commun")
-os.makedirs(COMMUN_DIR, exist_ok=True)
-
-for username in USERS_DB.keys():
-    user_folder = os.path.join(UPLOAD_DIR, username)
-    os.makedirs(user_folder, exist_ok=True)
-    if username not in FRIENDS:
-        FRIENDS[username] = []
-    if username not in PENDING_REQUESTS:
-        PENDING_REQUESTS[username] = []
-
-class SecureHandler(http.server.SimpleHTTPRequestHandler):
-    def check_auth(self):
-        cookie_header = self.headers.get('Cookie')
-        if cookie_header:
-            try:
-                c = cookies.SimpleCookie(cookie_header)
-                if 'session_id' in c:
-                    session_id = c['session_id'].value
-                    if session_id in SESSIONS:
-                        return SESSIONS[session_id]
-            except Exception:
-                pass
-        return None
-
-    def translate_path(self, path):
-        path = super().translate_path(path)
-        relpath = os.path.relpath(path, os.getcwd())
-        return os.path.join(UPLOAD_DIR, relpath)
-
-    def get_file_icon(self, filename, is_dir):
-        if is_dir:
-            return "bi-folder-fill text-warning"
-        ext = os.path.splitext(filename)[1].lower()
-        if ext == '.url':
-            return "bi-link-45deg text-success"
-        elif ext in ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp']:
-            return "bi-file-earmark-image-fill text-primary"
-        elif ext in ['.pdf']:
-            return "bi-file-earmark-pdf-fill text-danger"
-        elif ext in ['.zip', '.rar', '.7z', '.tar', '.gz']:
-            return "bi-file-earmark-zip-fill text-secondary"
-        elif ext in ['.mp4', '.avi', '.mkv', '.mov']:
-            return "bi-file-earmark-play-fill text-info"
-        elif ext in ['.mp3', '.wav', '.ogg']:
-            return "bi-file-earmark-music-fill text-info"
-        elif ext in ['.py', '.bat', '.sh', '.js', '.html', '.css', '.json']:
-            return "bi-file-earmark-code-fill text-dark"
-        elif ext in ['.txt', '.md', '.doc', '.docx']:
-            return "bi-file-earmark-text-fill text-secondary"
-        return "bi-file-earmark-fill text-muted"
-
-    def do_GET(self):
-        parsed_url = urllib.parse.urlparse(self.path)
-        
-        if parsed_url.path == "/login":
-            self.send_login_page()
-            return
-
-        if parsed_url.path == "/logout":
-            logged_in_user = self.check_auth()
-            if logged_in_user:
-                log_event(f"Déconnexion : {logged_in_user}")
-            cookie_header = self.headers.get('Cookie')
-            if cookie_header:
-                try:
-                    c = cookies.SimpleCookie(cookie_header)
-                    if 'session_id' in c:
-                        SESSIONS.pop(c['session_id'].value, None)
-                except Exception:
-                    pass
-            self.send_response(303)
-            self.send_header('Set-Cookie', 'session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT')
-            self.send_header('Location', '/login')
-            self.end_headers()
-            return
-
-        logged_in_user = self.check_auth()
-        if not logged_in_user:
-            self.send_response(303)
-            self.send_header('Location', '/login')
-            self.end_headers()
-            return
-
-        user_role = USERS_DB.get(logged_in_user, {}).get("role", "user")
-
-        if parsed_url.path == "/admin":
-            if user_role != "admin":
-                self.send_forbidden("Accès réservé à l'administrateur.")
-                return
-            self.send_admin_dashboard(logged_in_user)
-            return
-
-        # Accepter une demande d'ami
-        if parsed_url.path.startswith("/accept-friend/"):
-            friend_name = parsed_url.path.split("/")[-1]
-            if logged_in_user in PENDING_REQUESTS and friend_name in PENDING_REQUESTS[logged_in_user]:
-                PENDING_REQUESTS[logged_in_user].remove(friend_name)
-                if logged_in_user not in FRIENDS[friend_name]:
-                    FRIENDS[friend_name].append(logged_in_user)
-                if friend_name not in FRIENDS[logged_in_user]:
-                    FRIENDS[logged_in_user].append(friend_name)
-                log_event(f"Ami accepté : {friend_name} et {logged_in_user}")
-            self.send_response(303)
-            self.send_header('Location', '/')
-            self.end_headers()
-            return
-
-        if parsed_url.path == "/download-zip":
-            query_params = urllib.parse.parse_qs(parsed_url.query)
-            if "dir" in query_params:
-                rel_dir = query_params["dir"][0]
-                target_dir = os.path.normpath(os.path.join(UPLOAD_DIR, rel_dir))
-                if target_dir.startswith(UPLOAD_DIR) and os.path.isdir(target_dir):
-                    first_folder = rel_dir.split('/')[0] if '/' in rel_dir else rel_dir
-                    if user_role == "admin" or first_folder.lower() == "fichier commun" or first_folder == logged_in_user or first_folder in FRIENDS.get(logged_in_user, []):
-                        zip_filename = f"{os.path.basename(target_dir) or 'cloud'}.zip"
-                        zip_path = shutil.make_archive(os.path.join(UPLOAD_DIR, "temp_archive"), 'zip', target_dir)
-                        self.send_response(200)
-                        self.send_header("Content-type", "application/zip")
-                        self.send_header("Content-Disposition", f'attachment; filename="{zip_filename}"')
-                        self.end_headers()
-                        with open(zip_path, 'rb') as zf:
-                            shutil.copyfileobj(zf, self.wfile)
-                        os.remove(zip_path)
-                        return
-            self.send_forbidden("Accès refusé.")
-            return
-
-        if parsed_url.path == "/preview" or parsed_url.path == "/edit":
-            query_params = urllib.parse.parse_qs(parsed_url.query)
-            if "file" in query_params:
-                rel_file = query_params["file"][0]
-                target_path = os.path.normpath(os.path.join(UPLOAD_DIR, rel_file))
-                if target_path.startswith(UPLOAD_DIR) and os.path.isfile(target_path):
-                    first_folder = rel_file.split('/')[0] if '/' in rel_file else rel_file
-                    if user_role == "admin" or first_folder.lower() == "fichier commun" or first_folder == logged_in_user or first_folder in FRIENDS.get(logged_in_user, []):
-                        ext = os.path.splitext(target_path)[1].lower()
-                        filename = os.path.basename(target_path)
-                        
-                        if parsed_url.path == "/edit" and ext in ['.txt', '.py', '.js', '.css', '.html', '.json', '.md']:
-                            with open(target_path, "r", encoding="utf-8", errors="ignore") as f:
-                                content = f.read()
-                            self.send_edit_page(rel_file, filename, content)
-                            return
-
-                        if ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg']:
-                            mime = "image/png" if ext == '.png' else "image/jpeg"
-                            self.send_response(200)
-                            self.send_header("Content-type", mime)
-                            self.end_headers()
-                            with open(target_path, "rb") as f:
-                                shutil.copyfileobj(f, self.wfile)
-                            return
-                        elif ext == '.pdf':
-                            self.send_response(200)
-                            self.send_header("Content-type", "application/pdf")
-                            self.end_headers()
-                            with open(target_path, "rb") as f:
-                                shutil.copyfileobj(f, self.wfile)
-                            return
-                        elif ext in ['.txt', '.py', '.js', '.css', '.html', '.json', '.md']:
-                            with open(target_path, "r", encoding="utf-8", errors="ignore") as f:
-                                text_content = html.escape(f.read())
-                            self.send_response(200)
-                            self.send_header("Content-type", "text/html; charset=utf-8")
-                            self.end_headers()
-                            self.wfile.write(f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
-                            <link href="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css)" rel="stylesheet">
-                            <title>Aperçu - {filename}</title></head><body class="bg-dark text-light p-4">
-                            <div class="d-flex justify-content-between align-items-center mb-3">
-                                <h4 class="fw-bold m-0">{filename}</h4>
-                                <a href="/edit?file={urllib.parse.quote(rel_file)}" class="btn btn-warning btn-sm"><i class="bi bi-pencil-square me-1"></i> Modifier</a>
-                            </div>
-                            <pre class="bg-secondary p-3 rounded text-light" style="white-space: pre-wrap;"><code>{text_content}</code></pre>
-                            </body></html>""".encode('utf-8'))
-                            return
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"Fichier non trouve.")
-            return
-
-        if parsed_url.path.startswith("/temp-download/"):
-            token = parsed_url.path.split("/")[-1]
-            if token in TEMP_LINKS:
-                link_info = TEMP_LINKS[token]
-                if datetime.datetime.now() < link_info["expires"]:
-                    filepath = link_info["filepath"]
-                    if os.path.exists(filepath):
-                        self.send_file_content(filepath)
-                        return
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"Lien expire.")
-            return
-
-        if parsed_url.path == "/generate-link":
-            query_params = urllib.parse.parse_qs(parsed_url.query)
-            if "file" in query_params:
-                rel_file = query_params["file"][0]
-                target_path = os.path.normpath(os.path.join(UPLOAD_DIR, rel_file))
-                if target_path.startswith(UPLOAD_DIR):
-                    if os.path.exists(target_path) and os.path.isfile(target_path):
-                        token = str(uuid.uuid4())
-                        expires = datetime.datetime.now() + datetime.timedelta(hours=24)
-                        TEMP_LINKS[token] = {"filepath": target_path, "expires": expires}
-                        host = self.headers.get('Host', 'localhost:8000')
-                        temp_url = f"https://{host}/temp-download/{token}" if 'onrender.com' in host else f"http://{host}/temp-download/{token}"
-                        
-                        self.send_response(200)
-                        self.send_header("Content-type", "text/html; charset=utf-8")
-                        self.end_headers()
-                        self.wfile.write(f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
-                        <link href="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css)" rel="stylesheet">
-                        <title>Lien Temporaire</title></head>
-                        <body class="bg-light d-flex align-items-center justify-content-center vh-100">
-                        <div class="card shadow p-4 text-center" style="max-width: 500px;">
-                            <h4 class="fw-bold">Lien temporaire (24h)</h4>
-                            <input type="text" class="form-control font-monospace small mb-3" value="{temp_url}" readonly>
-                            <a href="/" class="btn btn-secondary">Retour</a>
-                        </div></body></html>""".encode('utf-8'))
-                        return
-            self.send_response(400)
-            self.end_headers()
-            return
-
-        if parsed_url.path == "/delete":
-            query_params = urllib.parse.parse_qs(parsed_url.query)
-            if "file" in query_params:
-                rel_file = query_params["file"][0]
-                target_path = os.path.normpath(os.path.join(UPLOAD_DIR, rel_file))
-                if target_path.startswith(UPLOAD_DIR):
-                    if os.path.exists(target_path):
-                        try:
-                            trash_dest = os.path.join(TRASH_DIR, f"{uuid.uuid4()}_{os.path.basename(target_path)}")
-                            shutil.move(target_path, trash_dest)
-                            FILE_OWNERS.pop(rel_file, None)
-                        except Exception:
-                            pass
-            self.send_response(303)
-            self.send_header('Location', '/')
-            self.end_headers()
-            return
-
-        super().do_GET()
-
-    def do_POST(self):
-        parsed_url = urllib.parse.urlparse(self.path)
-        
-        if parsed_url.path == "/login":
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length).decode('utf-8')
-            params = urllib.parse.parse_qs(body)
-            username = params.get("username", [""])[0].strip()
-            password = params.get("password", [""])[0].strip()
-            hashed_password = hashlib.sha256(password.encode('utf-8')).hexdigest()
-            
-            if username in USERS_DB and USERS_DB[username]["password"] == hashed_password:
-                session_id = str(uuid.uuid4())
-                SESSIONS[session_id] = username
-                self.send_response(303)
-                self.send_header('Set-Cookie', f'session_id={session_id}; Path=/')
-                self.send_header('Location', '/')
-                self.end_headers()
-            else:
-                self.send_login_page(error="Identifiant ou mot de passe incorrect.")
-            return
-
-        logged_in_user = self.check_auth()
-        if not logged_in_user:
-            self.send_response(303)
-            self.send_header('Location', '/login')
-            self.end_headers()
-            return
-
-        user_role = USERS_DB.get(logged_in_user, {}).get("role", "user")
-
         # Envoyer une demande d'ami
         if parsed_url.path == "/add-friend":
             content_length = int(self.headers.get('Content-Length', 0))
@@ -980,7 +524,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
-        <link href="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css)" rel="stylesheet">
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
         <title>Accès Interdit</title></head>
         <body class="bg-light d-flex align-items-center justify-content-center vh-100">
         <div class="card shadow p-4 text-center" style="max-width: 450px;">
@@ -993,8 +537,8 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         html = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>Connexion - Aresos Cloud</title>
-        <link href="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css)" rel="stylesheet">
-        <link href="[https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css](https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css)" rel="stylesheet"></head>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet"></head>
         <body class="bg-dark d-flex align-items-center justify-content-center vh-100">
             <div class="card shadow-lg p-4 bg-secondary text-light" style="width: 100%; max-width: 400px; border-radius: 12px;">
                 <div class="text-center mb-4">
@@ -1022,7 +566,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
 
     def send_edit_page(self, rel_file, filename, content):
         html_content = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
-        <link href="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css)" rel="stylesheet">
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
         <title>Éditer - {filename}</title></head>
         <body class="bg-dark text-light p-4">
         <div class="container" style="max-width: 800px;">
@@ -1053,7 +597,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 pass
 
         html_content = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
-        <link href="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css)" rel="stylesheet">
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
         <title>Administration</title></head>
         <body class="bg-light">
         <nav class="navbar navbar-dark bg-dark shadow-sm mb-4">
@@ -1141,8 +685,8 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         html_content = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>Aresos Cloud</title>
-        <link href="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css)" rel="stylesheet">
-        <link href="[https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css](https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css)" rel="stylesheet">
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
         <style>
             .drag-area {{ border: 2px dashed #0d6efd; border-radius: 8px; padding: 20px; text-align: center; background-color: #f8f9fa; cursor: pointer; }}
             .drag-area.active {{ background-color: #e2e6ea; }}
@@ -1301,7 +845,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     </div>
                 </div>
             </div>
-            <script src="[https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js](https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js)"></script>
+            <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
         </body></html>"""
 
         response_bytes = html_content.encode('utf-8')
