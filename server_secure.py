@@ -514,6 +514,11 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 </div>
             </div>
 
+            <!-- Message d'avertissement placé juste sous le bloc d'envoi -->
+            <div class="alert alert-danger text-center fw-bold shadow-sm py-2 mb-4" role="alert">
+                <i class="bi bi-exclamation-triangle-fill me-2"></i> Attention : Les fichiers stockés sont éphémères, pensez à télécharger vos fichiers importants !
+            </div>
+
             <div class="card shadow-sm mb-4">
                 <div class="card-body">
                     <h4 class="card-title fw-bold mb-3"><i class="bi bi-folder2-open me-2 text-warning"></i>Explorateur : <span class="text-muted font-monospace fs-6">{displaypath}</span></h4>"""
@@ -592,11 +597,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                         </table>
                     </div>
                 </div>
-            </div>
-
-            <!-- Message d'avertissement en bas de page -->
-            <div class="alert alert-danger text-center fw-bold shadow-sm py-3" role="alert">
-                <i class="bi bi-exclamation-triangle-fill me-2"></i> Attention : Les fichiers stockés sont éphémères, pensez à télécharger vos fichiers importants !
             </div>
         </div>
         </body>
