@@ -784,13 +784,13 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                                 </form>
                             </div>
 
-                            <!-- Ajouter un ami avec liste déroulante -->
+                            <!-- Ajouter un ami avec recherche interactive -->
                             <div class="tab-pane fade" id="friend-panel" role="tabpanel">
                                 <form action="/add-friend" method="POST" class="row g-3">
                                     <div class="col-md-8">
-                                        <label class="form-label small fw-semibold">Sélectionner un utilisateur</label>
-                                        <select name="friend_name" class="form-select form-select-sm" required>
-                                            <option value="" disabled selected>-- Choisir un utilisateur --</option>"""
+                                        <label class="form-label small fw-semibold">Rechercher ou sélectionner un utilisateur</label>
+                                        <input class="form-control form-control-sm" list="usersList" name="friend_name" placeholder="Tapez pour rechercher..." autocomplete="off" required>
+                                        <datalist id="usersList">
         
         for u in USERS_DB.keys():
             if u != logged_in_user and u != "admin" and u not in FRIENDS.get(logged_in_user, []):
