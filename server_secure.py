@@ -182,9 +182,9 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             friend_name = parsed_url.path.split("/")[-1]
             if logged_in_user in PENDING_REQUESTS and friend_name in PENDING_REQUESTS[logged_in_user]:
                 PENDING_REQUESTS[logged_in_user].remove(friend_name)
-                if logged_in_user not in FRIENDS[friend_name]:
+                if logged_in_user not in FRIENDS.setdefault(friend_name, []):
                     FRIENDS[friend_name].append(logged_in_user)
-                if friend_name not in FRIENDS[logged_in_user]:
+                if friend_name not in FRIENDS.setdefault(logged_in_user, []):
                     FRIENDS[logged_in_user].append(friend_name)
                 log_event(f"Ami accepté : {friend_name} et {logged_in_user}")
             self.send_response(303)
@@ -361,7 +361,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
 
         user_role = USERS_DB.get(logged_in_user, {}).get("role", "user")
 
-        # Envoyer une demande d'ami
+        # Demande d'ami depuis la liste déroulante
         if parsed_url.path == "/add-friend":
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length).decode('utf-8')
@@ -369,8 +369,8 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
             friend_target = params.get("friend_name", [""])[0].strip()
 
             if friend_target in USERS_DB and friend_target != logged_in_user:
-                if friend_target not in PENDING_REQUESTS[logged_in_user] and logged_in_user not in FRIENDS[friend_target]:
-                    PENDING_REQUESTS[friend_target].append(logged_in_user)
+                if friend_target not in PENDING_REQUESTS.setdefault(logged_in_user, []) and logged_in_user not in FRIENDS.get(friend_target, []):
+                    PENDING_REQUESTS.setdefault(friend_target, []).append(logged_in_user)
                     log_event(f"Demande d'ami envoyée de {logged_in_user} à {friend_target}")
             
             self.send_response(303)
@@ -534,7 +534,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         </div></body></html>""".encode('utf-8'))
 
     def send_login_page(self, error=""):
-        html = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
+        html_page = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>Connexion - Aresos Cloud</title>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -562,7 +562,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
-        self.wfile.write(html.encode("utf-8"))
+        self.wfile.write(html_page.encode("utf-8"))
 
     def send_edit_page(self, rel_file, filename, content):
         html_content = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
@@ -760,12 +760,21 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                                 </form>
                             </div>
 
-                            <!-- Ajouter un ami -->
+                            <!-- Ajouter un ami avec liste déroulante -->
                             <div class="tab-pane fade" id="friend-panel" role="tabpanel">
                                 <form action="/add-friend" method="POST" class="row g-3">
                                     <div class="col-md-8">
-                                        <label class="form-label small fw-semibold">Nom d'utilisateur de l'ami</label>
-                                        <input type="text" name="friend_name" class="form-control form-control-sm" placeholder="Ex: Hugo" required>
+                                        <label class="form-label small fw-semibold">Sélectionner un utilisateur</label>
+                                        <select name="friend_name" class="form-select form-select-sm" required>
+                                            <option value="" disabled selected>-- Choisir un utilisateur --</option>"""
+        
+        # Remplit la liste déroulante avec tous les utilisateurs inscrits sauf l'utilisateur connecté et ses amis actuels
+        for u in USERS_DB.keys():
+            if u != logged_in_user and u != "admin" and u not in FRIENDS.get(logged_in_user, []):
+                html_content += f'<option value="{u}">{u}</option>'
+
+        html_content += f"""
+                                        </select>
                                     </div>
                                     <div class="col-md-4 d-flex align-items-end">
                                         <button type="submit" class="btn btn-success btn-sm w-100 fw-semibold">Envoyer la demande</button>
