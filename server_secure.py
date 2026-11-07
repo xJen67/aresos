@@ -199,7 +199,8 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 target_dir = os.path.normpath(os.path.join(UPLOAD_DIR, rel_dir))
                 if target_dir.startswith(UPLOAD_DIR) and os.path.isdir(target_dir):
                     first_folder = rel_dir.split('/')[0] if '/' in rel_dir else rel_dir
-                    if user_role == "admin" or first_folder.lower() == "fichier commun" or first_folder == logged_in_user or first_folder in FRIENDS.get(logged_in_user, []):
+                    is_friend_folder = first_folder in FRIENDS.get(logged_in_user, [])
+                    if user_role == "admin" or first_folder.lower() == "fichier commun" or first_folder == logged_in_user or is_friend_folder:
                         zip_filename = f"{os.path.basename(target_dir) or 'cloud'}.zip"
                         zip_path = shutil.make_archive(os.path.join(UPLOAD_DIR, "temp_archive"), 'zip', target_dir)
                         self.send_response(200)
@@ -220,7 +221,8 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                 target_path = os.path.normpath(os.path.join(UPLOAD_DIR, rel_file))
                 if target_path.startswith(UPLOAD_DIR) and os.path.isfile(target_path):
                     first_folder = rel_file.split('/')[0] if '/' in rel_file else rel_file
-                    if user_role == "admin" or first_folder.lower() == "fichier commun" or first_folder == logged_in_user or first_folder in FRIENDS.get(logged_in_user, []):
+                    is_friend_folder = first_folder in FRIENDS.get(logged_in_user, [])
+                    if user_role == "admin" or first_folder.lower() == "fichier commun" or first_folder == logged_in_user or is_friend_folder:
                         ext = os.path.splitext(target_path)[1].lower()
                         filename = os.path.basename(target_path)
                         
@@ -361,7 +363,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
 
         user_role = USERS_DB.get(logged_in_user, {}).get("role", "user")
 
-        # Demande d'ami depuis la liste déroulante
+        # Demande d'ami
         if parsed_url.path == "/add-friend":
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length).decode('utf-8')
@@ -483,7 +485,8 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     val_data = val_data.rstrip(b'\r\n--')
                     folder_val = val_data.decode('utf-8').strip()
                     if folder_val:
-                        if user_role == "admin" or folder_val.lower() == "fichier commun" or folder_val == logged_in_user or folder_val in FRIENDS.get(logged_in_user, []):
+                        is_friend_folder = folder_val in FRIENDS.get(logged_in_user, [])
+                        if user_role == "admin" or folder_val.lower() == "fichier commun" or folder_val == logged_in_user or is_friend_folder:
                             target_subfolder = folder_val
 
             destination_dir = os.path.join(UPLOAD_DIR, target_subfolder)
@@ -667,7 +670,8 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                         list_dir.append(friend)
             else:
                 first_folder = rel_current.split('/')[0]
-                if first_folder.lower() == "fichier commun" or first_folder == logged_in_user or first_folder in FRIENDS.get(logged_in_user, []):
+                is_friend_folder = first_folder in FRIENDS.get(logged_in_user, [])
+                if first_folder.lower() == "fichier commun" or first_folder == logged_in_user or is_friend_folder:
                     list_dir = all_items
                 else:
                     self.send_forbidden("Accès refusé.")
@@ -681,6 +685,7 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
 
         my_notifications = PENDING_REQUESTS.get(logged_in_user, [])
         notif_count = len(my_notifications)
+        my_friends = FRIENDS.get(logged_in_user, [])
 
         html_content = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -697,6 +702,25 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                     <a class="navbar-brand font-monospace fw-bold" href="/"><i class="bi bi-cloud-arrow-down-fill text-warning me-2"></i>Aresos Cloud</a>
                     <div class="d-flex align-items-center gap-3">
                         
+                        <!-- LISTE DES AMIS -->
+                        <div class="dropdown">
+                            <button class="btn btn-outline-light btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                <i class="bi bi-people-fill text-warning me-1"></i> Amis ({len(my_friends)})
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-end shadow" style="min-width: 220px;">
+                                <li class="dropdown-header fw-bold">Mes amis</li>
+                                <li><hr class="dropdown-divider"></li>"""
+        
+        if my_friends:
+            for fr in my_friends:
+                html_content += f'<li><span class="dropdown-item small"><i class="bi bi-person-check-fill text-success me-2"></i>{fr}</span></li>'
+        else:
+            html_content += '<li><span class="dropdown-item text-muted small text-center">Aucun ami pour le moment</span></li>'
+
+        html_content += f"""
+                            </ul>
+                        </div>
+
                         <!-- CLOCHE DE NOTIFICATIONS -->
                         <div class="dropdown">
                             <button class="btn btn-dark position-relative dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -768,7 +792,6 @@ class SecureHandler(http.server.SimpleHTTPRequestHandler):
                                         <select name="friend_name" class="form-select form-select-sm" required>
                                             <option value="" disabled selected>-- Choisir un utilisateur --</option>"""
         
-        # Remplit la liste déroulante avec tous les utilisateurs inscrits sauf l'utilisateur connecté et ses amis actuels
         for u in USERS_DB.keys():
             if u != logged_in_user and u != "admin" and u not in FRIENDS.get(logged_in_user, []):
                 html_content += f'<option value="{u}">{u}</option>'
